@@ -3,7 +3,7 @@
 Two sites, one body of water.
 
 - **`/input/`** — the phone. A black-and-white lattice your hand disturbs. Every gesture is saved as numbers only (no text, no IDs) and released into the pool.
-- **`/pool/`** — the wall. A dark sea that replays every gesture ever made. It glows only where it's disturbed, like real bioluminescent plankton, and water that's been stirred too much tires and dims for ~20 seconds before it recovers.
+- **`/pool/`** — the wall. A tiled pool of black water that replays every gesture ever made as currents and ripples. Ripples bounce off the walls so the water sloshes in a finite space; overhead lamps mirror on the surface so you see every wave. The water stays black except ~150,000 plankton particles that light up only where the water is disturbed, and water that's been stirred too much tires and dims for ~20 seconds before it recovers.
 - **`worker.js`** — the archive. A Cloudflare Worker that keeps every gesture forever.
 
 It works right away in **demo mode** (no setup): the wall plays invented gestures, and if you open `/input/` in another tab of the *same browser*, your gestures appear on the wall.
@@ -70,7 +70,10 @@ The QR code on the wall automatically points to the `/input/` page on whatever d
 Live gestures land larger and brighter than archived ones so visitors can find their own mark.
 
 ## Tuning the sea
-Near the top of `pool/index.html`, the `P` block has plain settings: `threshold` (how hard you must stir before it glows), `gain` (brightness), `lightDecay` (afterglow length), `recover` / `deplete` (how quickly water tires and recovers), `curl` (how curly the eddies are), `bloom`.
+Near the top of `pool/index.html`, the `P` block has plain settings:
+- **Plankton:** `threshold` (how hard you must stir before they light), `gain`, `plankton` (brightness), `lightDecay` (afterglow), `recover` / `deplete` (how fast water tires and recovers), `particles` (count = this squared)
+- **Water:** `curl` (how curly the currents are), `waveForce` (how big the ripples are), `waveDamp` (how long they keep sloshing, closer to 1 = longer), `waveSpeed`, `slope` (how much ripples bend the reflections)
+- **Room:** `margin` (deck width), `lamps` (reflection brightness), `bloom`
 
 ## Backups
 `https://<your-worker>/export?after=0` returns the first 500 gestures; change `after` to the last `id` you got to page through the rest.

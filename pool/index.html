@@ -7,13 +7,14 @@
 <style>
   html,body{margin:0;height:100%;background:#000;overflow:hidden;cursor:none}
   canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
-  #info{position:fixed;left:2.2vw;bottom:2vw;color:#5fc8e0;opacity:.42;
-    font:400 1.05vw/1.4 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.08em;pointer-events:none}
+  #info{position:fixed;left:3vh;bottom:2.2vh;color:#5fc8e0;opacity:.42;
+    font:400 1.6vh/1.4 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.08em;pointer-events:none}
   #info b{font-weight:400;color:#9be6f5}
-  #qrbox{position:fixed;right:2.2vw;bottom:2vw;display:flex;flex-direction:column;align-items:center;gap:.6vw;
+  #info br{display:none} #info span{margin-left:1.6vh}
+  #qrbox{position:fixed;right:3vh;bottom:1.2vh;display:flex;flex-direction:row-reverse;align-items:center;gap:1.4vh;
     opacity:.62;pointer-events:none}
-  #qr{width:8.5vw;height:8.5vw;background:#bfe4ee;border-radius:.5vw;padding:.45vw;box-sizing:content-box;display:none}
-  #qrcap{color:#5fc8e0;font:400 .9vw/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.14em}
+  #qr{width:7.4vh;height:7.4vh;background:#bfe4ee;border-radius:.6vh;padding:.5vh;box-sizing:content-box;display:none}
+  #qrcap{color:#5fc8e0;font:400 1.4vh/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.14em}
   #err{position:fixed;inset:0;display:none;place-items:center;color:#5fc8e0;font:16px ui-monospace,monospace}
 </style>
 </head>
@@ -24,11 +25,12 @@
 <div id="err">this display can't run WebGL</div>
 <script>
 /* ============================================================
-   POOL — the sea.  Lampwrecked.
-   Replays every gesture ever made on /input/ as forces in a
-   dark fluid. Light comes only from disturbance: like real
-   dinoflagellates, the water glows where it is sheared, and
-   the glow tires where it has been stirred too much.
+   POOL — the pool.  Lampwrecked.
+   A tiled basin of black water. Every gesture ever made on
+   /input/ is replayed as currents and ripples. Plankton light
+   up only where the water is sheared, and tire where it has been
+   stirred too much. Overhead lamps mirror on the surface so you
+   can see every wave slosh off the walls.
    ============================================================ */
 
 // ---- SETTINGS -------------------------------------------------
@@ -45,40 +47,53 @@ const LOW = qs.get('q') === 'low';
 const SHOW_UI = qs.get('ui') !== '0';
 
 const P = {
-  simRes: LOW ? 96 : 128,
-  lightRes: LOW ? 360 : 640,
-  bloomRes: LOW ? 160 : 256,
+  simRes: LOW ? 96 : 128,         // currents
+  lightRes: LOW ? 320 : 512,      // plankton excitation field
+  waveRes: LOW ? 200 : 320,       // water surface
+  particles: LOW ? 200 : 384,     // plankton = particles² (384² ≈ 147k)
+  bloomRes: LOW ? 160 : 270,
   pressureIters: LOW ? 16 : 24,
-  velDissipation: 0.35,     // how fast currents calm
-  curl: 18,                 // vorticity confinement: curly, organic eddies
-  threshold: 7.0,           // shear needed before plankton light up
-  gain: 8.0,                // light emitted per unit stimulus
-  lightDecay: 1.5,          // afterglow fade (per second)
-  recover: 0.055,           // charge recovery (per second) ~20s to full
-  deplete: 0.9,             // how much each flash tires the water
-  bloom: 1.0,
-  force: 1.0,               // global gesture force
+  margin: 0.105,                  // deck width, in screen heights
+  velDissipation: 0.35,           // how fast currents calm
+  curl: 18,                       // curly, organic eddies
+  threshold: 7.0,                 // shear needed before plankton light up
+  gain: 8.0,                      // light per unit stimulus
+  lightDecay: 1.5,                // afterglow fade (per second)
+  recover: 0.055,                 // charge recovery per second (~20s)
+  deplete: 0.9,                   // how much each flash tires the water
+  waveSpeed: 0.42,                // ripple speed (keep under 0.5)
+  waveDamp: 0.9975,               // how long ripples keep sloshing
+  waveForce: 0.3,                 // how much gestures make waves
+  slope: 4.0,                     // how strongly ripples bend the light
+  lamps: 1.0,                     // brightness of light reflections
+  plankton: 1.5,                  // brightness of plankton
+  bloom: 0.9,
+  force: 1.0,                     // global gesture force
 };
 
 // ================= WebGL setup =================
 const canvas = document.getElementById('c');
 let gl, ext;
 (function init() {
-  const params = { alpha: false, depth: false, stencil: false, antialias: false, preserveDrawingBuffer: false };
+  const params = { alpha: false, depth: false, stencil: false, antialias: false, preserveDrawingBuffer: qs.get('test') === '1' };
   gl = canvas.getContext('webgl2', params);
   const isGL2 = !!gl;
   if (!gl) gl = canvas.getContext('webgl', params) || canvas.getContext('experimental-webgl', params);
   if (!gl) { document.getElementById('err').style.display = 'grid'; throw new Error('no webgl'); }
-  let halfFloat, linear;
-  if (isGL2) { gl.getExtension('EXT_color_buffer_float'); linear = gl.getExtension('OES_texture_float_linear') || gl.getExtension('OES_texture_half_float_linear'); }
-  else { halfFloat = gl.getExtension('OES_texture_half_float'); linear = gl.getExtension('OES_texture_half_float_linear'); }
+  let halfFloat, linear, cbf = null;
+  if (isGL2) { cbf = gl.getExtension('EXT_color_buffer_float'); linear = gl.getExtension('OES_texture_float_linear') || gl.getExtension('OES_texture_half_float_linear'); }
+  else { halfFloat = gl.getExtension('OES_texture_half_float'); linear = gl.getExtension('OES_texture_half_float_linear'); gl.getExtension('OES_texture_float'); }
   const type = isGL2 ? gl.HALF_FLOAT : (halfFloat && halfFloat.HALF_FLOAT_OES);
   const fmt = isGL2 ? { internal: gl.RGBA16F, format: gl.RGBA } : { internal: gl.RGBA, format: gl.RGBA };
   ext = { isGL2, type, fmt, linear: !!linear };
-  // verify we can render into half-float; fall back to bytes (lower quality) if not
   if (!type || !canRender(fmt.internal, fmt.format, type)) {
     ext.type = gl.UNSIGNED_BYTE; ext.fmt = { internal: gl.RGBA, format: gl.RGBA }; ext.byteMode = true; ext.linear = true;
   }
+  // particle positions want full 32-bit floats so slow drift isn't rounded away
+  ext.pos = { type: ext.type, fmt: ext.fmt };
+  if (isGL2 && cbf && canRender(gl.RGBA32F, gl.RGBA, gl.FLOAT)) ext.pos = { type: gl.FLOAT, fmt: { internal: gl.RGBA32F, format: gl.RGBA } };
+  else if (!isGL2 && gl.getExtension('WEBGL_color_buffer_float') && canRender(gl.RGBA, gl.RGBA, gl.FLOAT)) ext.pos = { type: gl.FLOAT, fmt: { internal: gl.RGBA, format: gl.RGBA } };
+  ext.vtf = gl.getParameter(gl.MAX_VERTEX_TEXTURE_IMAGE_UNITS) > 1 && !ext.byteMode;
 })();
 function canRender(internal, format, type) {
   const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
@@ -104,6 +119,23 @@ void main(){
   vT = vUv + vec2(0.,texel.y); vB = vUv - vec2(0.,texel.y);
   gl_Position = vec4(aPos,0.,1.);
 }`;
+// plankton: one point per particle, positioned from the particle texture
+const VS_PART = `
+precision highp float; precision highp sampler2D;
+attribute vec2 aPos;               // this particle's address in the particle texture
+uniform sampler2D uPos, uLight;
+uniform vec4 pool; uniform float time, psize;
+varying float vB; varying float vSeed;
+void main(){
+  vec4 p = texture2D(uPos, aPos);
+  float l = texture2D(uLight, p.xy).r;
+  float fl = 0.5 + 0.5*sin(time*(2.5 + p.z*9.0) + p.z*80.0);
+  vB = smoothstep(0.02, 0.55, l) * (0.35 + 0.65*fl) * (0.55 + 0.9*fract(p.z*13.7));
+  vSeed = p.z;
+  vec2 s = pool.xy + p.xy*pool.zw;
+  gl_Position = vB < 0.004 ? vec4(3.,3.,3.,1.) : vec4(s*2.0-1.0, 0., 1.);
+  gl_PointSize = psize*(0.7 + 1.6*vB);
+}`;
 const HEAD = `precision highp float; precision highp sampler2D;
 varying vec2 vUv, vL, vR, vT, vB;
 `;
@@ -113,7 +145,8 @@ uniform sampler2D uTarget; uniform float aspect; uniform vec3 color; uniform vec
 void main(){
   vec2 p = vUv - point; p.x *= aspect;
   vec3 s = exp(-dot(p,p)/radius) * color;
-  gl_FragColor = vec4(texture2D(uTarget,vUv).xyz + s, 1.);
+  vec4 base = texture2D(uTarget,vUv);
+  gl_FragColor = vec4(base.xyz + s, base.w);
 }`,
   advect: `${HEAD}
 uniform sampler2D uVelocity, uSource; uniform vec2 texel, dyeTexel; uniform float dt, dissipation;
@@ -176,9 +209,11 @@ uniform sampler2D uPressure, uVelocity;
 void main(){
   float L = texture2D(uPressure,vL).x, R = texture2D(uPressure,vR).x, T = texture2D(uPressure,vT).x, B = texture2D(uPressure,vB).x;
   vec2 v = texture2D(uVelocity,vUv).xy - vec2(R-L,T-B);
+  // solid pool walls: no flow through the edges
+  if(vL.x<0. || vR.x>1.) v.x = 0.; if(vB.y<0. || vT.y>1.) v.y = 0.;
   gl_FragColor = vec4(v,0.,1.);
 }`,
-  // the bioluminescence: shear excites plankton; light needs charge; charge tires and recovers
+  // bioluminescence: shear excites plankton; light needs charge; charge tires and recovers
   lumen: `${HEAD}
 uniform sampler2D uVelocity, uLight; uniform vec2 vtexel; uniform float dt, threshold, gain, decay, recover, deplete;
 void main(){
@@ -188,7 +223,7 @@ void main(){
   float dudx = 0.5*(r.x-l.x), dvdy = 0.5*(t.y-b.y), dudy = 0.5*(t.x-b.x), dvdx = 0.5*(r.y-l.y);
   float shear = sqrt((dudx-dvdy)*(dudx-dvdy) + (dudy+dvdx)*(dudy+dvdx));
   float vort = abs(dvdx-dudy);
-  float strain = shear + 0.6*vort;                // velocity change per sim cell
+  float strain = shear + 0.6*vort;
   float stim = smoothstep(threshold, threshold*5.0, strain);
   vec4 L = texture2D(uLight,vUv);
   float charge = L.g;
@@ -197,10 +232,53 @@ void main(){
   charge = clamp(charge + recover*dt*(1.0-charge) - emit*deplete, 0.0, 1.0);
   gl_FragColor = vec4(min(light,6.0), charge, 0., 1.);
 }`,
-  // pre-pass for bloom: palette at low res
+  // water surface: wave equation, R = height now, G = height before. Edges reflect = sloshing.
+  wave: `${HEAD}
+uniform sampler2D uWave; uniform vec2 texel; uniform float c2, damp;
+void main(){
+  vec2 s = texture2D(uWave,vUv).rg;
+  float L = texture2D(uWave,clamp(vL,texel*.5,1.-texel*.5)).r, R = texture2D(uWave,clamp(vR,texel*.5,1.-texel*.5)).r;
+  float T = texture2D(uWave,clamp(vT,texel*.5,1.-texel*.5)).r, B = texture2D(uWave,clamp(vB,texel*.5,1.-texel*.5)).r;
+  float lap = L+R+T+B-4.0*s.r;
+  float h = (2.0*s.r - s.g + c2*lap) * damp;
+  h = mix(h, (L+R+T+B)*0.25, 0.012);       // a touch of softening so it never rings forever
+  gl_FragColor = vec4(clamp(h,-8.,8.), s.r, 0., 1.);
+}`,
+  // plankton drift with the currents; old ones quietly re-seed elsewhere
+  partInit: `${HEAD}
+float hash(vec2 p){ p = fract(p*vec2(123.34,456.21)); p += dot(p,p+45.32); return fract(p.x*p.y); }
+void main(){
+  vec2 c = gl_FragCoord.xy;
+  gl_FragColor = vec4(hash(c), hash(c+17.13), hash(c+51.7), hash(c+3.9)*20.0);
+}`,
+  partStep: `${HEAD}
+uniform sampler2D uPos, uVelocity; uniform vec2 vtexel; uniform float dt, time;
+float hash(vec2 p){ p = fract(p*vec2(123.34,456.21)); p += dot(p,p+45.32); return fract(p.x*p.y); }
+void main(){
+  vec4 p = texture2D(uPos, vUv);
+  vec2 v = texture2D(uVelocity, p.xy).xy;
+  p.xy += dt * v * vtexel;
+  p.w += dt;
+  float life = 14.0 + 22.0*fract(p.z*7.31);
+  if (p.w > life || p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0) {
+    vec2 k = vUv*917.0 + fract(time*0.137)*311.0;
+    p = vec4(hash(k), hash(k+19.7), p.z, 0.0);
+  }
+  gl_FragColor = p;
+}`,
+  partFS: `precision highp float;
+varying float vB; varying float vSeed;
+uniform float gain;
+void main(){
+  vec2 q = gl_PointCoord - 0.5;
+  float d = length(q);
+  float a = smoothstep(0.5, 0.0, d);
+  vec3 c = mix(vec3(0.08,0.55,1.0), vec3(0.55,0.97,1.0), smoothstep(0.35,1.2,vB)) * vB * a * gain;
+  gl_FragColor = vec4(c, 1.0);
+}`,
   bright: `${HEAD}
-uniform sampler2D uLight;
-void main(){ float l = texture2D(uLight,vUv).r; gl_FragColor = vec4(vec3(0.08,0.55,1.0)*l*l*2.4, 1.); }`,
+uniform sampler2D uTexture;
+void main(){ gl_FragColor = vec4(texture2D(uTexture,vUv).rgb, 1.); }`,
   blur: `${HEAD}
 uniform sampler2D uTexture; uniform vec2 dir;
 void main(){
@@ -209,30 +287,91 @@ void main(){
   c += texture2D(uTexture,vUv+dir*3.231).rgb*0.07;  c += texture2D(uTexture,vUv-dir*3.231).rgb*0.07;
   gl_FragColor = vec4(c,1.);
 }`,
+  // the room: deck tiles, coping, underwater mosaic fading to black, lamp reflections, plankton
   display: `${HEAD}
-uniform sampler2D uLight, uBloom; uniform float time, bloomAmt; uniform vec2 res;
+uniform sampler2D uWave, uParts, uBloom, uLight;
+uniform vec4 pool; uniform vec2 res, wtexel; uniform float time, bloomAmt, slope, lamps, poolAspect, usePart;
 float hash(vec2 p){ p = fract(p*vec2(123.34,456.21)); p += dot(p,p+45.32); return fract(p.x*p.y); }
-vec3 sea(float v){
-  vec3 c = vec3(0.0,0.06,0.16)*smoothstep(0.0,0.5,v);
-  c += vec3(0.0,0.22,0.52)*smoothstep(0.15,1.4,v);
-  c += vec3(0.12,0.62,0.85)*smoothstep(0.9,3.0,v);
-  c += vec3(0.6,0.95,1.0)*smoothstep(2.6,6.0,v);
-  return c;
+// tile pattern: x = inside-tile (1) vs grout (0), y = per-tile variation, z = bevel shade
+vec3 tiles(vec2 px, float size, float grout){
+  vec2 c = px/size; vec2 id = floor(c); vec2 f = fract(c);
+  vec2 e = min(f, 1.0-f);
+  float m = smoothstep(0.0, grout, min(e.x,e.y));
+  float bevel = (f.x - f.y)*0.18*smoothstep(grout*3.0, 0.0, min(e.x,e.y));
+  return vec3(m, hash(id), bevel);
+}
+// overhead lamps, in pool units (x 0..poolAspect, y 0..1). Water mirrors them.
+float lampsAt(vec2 c){
+  float A = poolAspect;
+  float e = 0.0;
+  // long strip light
+  float sx = smoothstep(0.12*A, 0.15*A, c.x) * smoothstep(0.88*A, 0.85*A, c.x);
+  e += sx * smoothstep(0.009, 0.004, abs(c.y-0.66)) * 1.4;
+  // three round lamps
+  for (int i=0;i<3;i++){
+    vec2 lp = vec2((0.22 + 0.28*float(i))*A, 0.27);
+    float d = length(c - lp);
+    e += smoothstep(0.03, 0.022, d) * 1.6;
+    e += exp(-d*d/0.012) * 0.05;               // soft halo so crests catch light
+  }
+  e += exp(-pow(c.y-0.66,2.0)/0.01) * sx * 0.04;
+  return e;
 }
 void main(){
-  vec4 L = texture2D(uLight,vUv);
-  float l = L.r;
-  // plankton grain: tiny points that twinkle inside the glow
-  vec2 cell = floor(gl_FragCoord.xy / max(2.0, res.y/540.0));
-  float h = hash(cell);
-  float tw = 0.5+0.5*sin(time*(1.5+h*6.0) + h*60.0);
-  float speck = step(0.965,h)*tw*2.2 + (h-0.5)*0.18;
-  float v = l*2.8*(0.78 + speck);
-  vec3 c = sea(v) + texture2D(uBloom,vUv).rgb*bloomAmt;
-  // faint depletion memory: tired water is a hair warmer-dark
-  c = 1.0 - exp(-c*1.35);
-  c += (hash(gl_FragCoord.xy+time)-0.5)/255.0; // dither
-  gl_FragColor = vec4(c,1.);
+  vec2 px = vUv*res;
+  vec2 pmin = pool.xy*res, pmax = (pool.xy+pool.zw)*res;
+  float dEdge = min(min(px.x-pmin.x, pmax.x-px.x), min(px.y-pmin.y, pmax.y-px.y)); // >0 water, <0 deck
+  float H = res.y;
+  vec3 col = vec3(0.0);
+  vec3 bloom = texture2D(uBloom, vUv).rgb;
+  float glowLight = dot(bloom, vec3(0.3,0.5,0.2));
+
+  if (dEdge < 0.0) {
+    // ---- deck ----
+    vec3 t = tiles(px - pmin, H*0.058, 0.035);
+    float lamp = 0.55 + 0.45*smoothstep(H*0.35, 0.0, -dEdge);
+    vec3 stone = vec3(0.058,0.062,0.066) * (0.8 + 0.4*t.y) * (1.0 + t.z);
+    col = mix(vec3(0.012), stone, t.x) * lamp;
+    // coping: a rounded stone lip around the water
+    float cw = H*0.026;
+    if (-dEdge < cw) {
+      float u = -dEdge/cw;                       // 0 at water, 1 at deck
+      vec3 cp = tiles(vec2(px.x+px.y, 0.0), H*0.09, 0.02);
+      float round = sin(u*3.14159);
+      vec3 cop = vec3(0.13,0.14,0.145) * (0.55 + 0.6*round) * (0.9+0.2*cp.y);
+      col = mix(col, cop, smoothstep(1.0, 0.85, u));
+      col *= mix(0.55, 1.0, smoothstep(0.0, 0.25, u)); // shadowed nose
+    }
+    col += vec3(0.05,0.35,0.6) * glowLight * 0.5;     // plankton light spills onto the deck edge
+  } else {
+    // ---- water ----
+    vec2 p = (vUv - pool.xy)/pool.zw;
+    float hL = texture2D(uWave, p - vec2(wtexel.x,0.)).r, hR = texture2D(uWave, p + vec2(wtexel.x,0.)).r;
+    float hB = texture2D(uWave, p - vec2(0.,wtexel.y)).r, hT = texture2D(uWave, p + vec2(0.,wtexel.y)).r;
+    vec2 grad = vec2(hR-hL, hT-hB) * slope;
+    vec3 N = normalize(vec3(-grad, 1.0));
+    // underwater wall mosaic, bent by the surface, fading into the deep
+    float depth = exp(-dEdge/(H*0.055));
+    vec2 rp = px + grad*H*0.012;
+    vec3 t = tiles(rp - pmin, H*0.019, 0.07);
+    vec3 mosaic = mix(vec3(0.01,0.02,0.025), vec3(0.09,0.24,0.28)*(0.75+0.5*t.y), t.x);
+    float wallShadow = smoothstep(0.0, H*0.012, dEdge);  // dark band under the coping
+    col = mosaic * depth * (0.32 + glowLight*5.0) * mix(0.35, 1.0, wallShadow);
+    // plankton
+    if (usePart > 0.5) col += texture2D(uParts, vUv).rgb;
+    else { float l = texture2D(uLight,p).r; float h = hash(floor(px/2.0)); col += vec3(0.1,0.7,1.0)*l*step(0.96,h)*3.0; }
+    col += bloom * bloomAmt;
+    // reflections of the lamps
+    vec3 R = reflect(vec3(0.,0.,-1.), N);
+    vec2 w = vec2(p.x*poolAspect, p.y);
+    vec2 c = w + R.xy/max(R.z,0.2) * 0.9;
+    float fres = 0.22 + 0.78*pow(1.0 - N.z, 3.0);
+    float spec = lampsAt(c) * fres * lamps;
+    col += vec3(0.85,0.93,1.0) * spec * smoothstep(0.0, H*0.004, dEdge);
+  }
+  col = 1.0 - exp(-col*1.25);
+  col += (hash(gl_FragCoord.xy+time)-0.5)/255.0;
+  gl_FragColor = vec4(col,1.);
 }`,
 };
 
@@ -242,9 +381,9 @@ function compile(type, src) {
   return s;
 }
 const vsObj = compile(gl.VERTEX_SHADER, VS);
-function program(fsSrc, defs = '') {
+function program(fsSrc, defs = '', vs = vsObj) {
   const p = gl.createProgram();
-  gl.attachShader(p, vsObj); gl.attachShader(p, compile(gl.FRAGMENT_SHADER, defs + fsSrc));
+  gl.attachShader(p, vs); gl.attachShader(p, compile(gl.FRAGMENT_SHADER, defs + fsSrc));
   gl.bindAttribLocation(p, 0, 'aPos'); gl.linkProgram(p);
   if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
   const u = {}; const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
@@ -253,49 +392,64 @@ function program(fsSrc, defs = '') {
 }
 const manual = ext.linear ? '' : '#define MANUAL\n';
 const prog = {};
-for (const k in FS) prog[k] = program(FS[k], k === 'advect' ? manual : '');
+for (const k in FS) if (k !== 'partFS') prog[k] = program(FS[k], k === 'advect' ? manual : '');
+if (ext.vtf) prog.parts = program(FS.partFS, '', compile(gl.VERTEX_SHADER, VS_PART));
 
 // fullscreen quad
-gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+const quadBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, -1, 1, 1, 1, 1, -1]), gl.STATIC_DRAW);
 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
 gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array([0, 1, 2, 0, 2, 3]), gl.STATIC_DRAW);
 gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0); gl.enableVertexAttribArray(0);
+// one vertex per plankton
+const NP = P.particles, partBuf = gl.createBuffer();
+{ const a = new Float32Array(NP * NP * 2); let k = 0;
+  for (let y = 0; y < NP; y++) for (let x = 0; x < NP; x++) { a[k++] = (x + 0.5) / NP; a[k++] = (y + 0.5) / NP; }
+  gl.bindBuffer(gl.ARRAY_BUFFER, partBuf); gl.bufferData(gl.ARRAY_BUFFER, a, gl.STATIC_DRAW); gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf); }
 
-function fbo(w, h, filter) {
+function fbo(w, h, filter, kind = ext) {
   gl.activeTexture(gl.TEXTURE0);
   const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texImage2D(gl.TEXTURE_2D, 0, ext.fmt.internal, w, h, 0, ext.fmt.format, ext.type, null);
+  gl.texImage2D(gl.TEXTURE_2D, 0, kind.fmt.internal, w, h, 0, kind.fmt.format, kind.type, null);
   const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
   gl.viewport(0, 0, w, h); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
   return { tex, fb, w, h, tx: 1 / w, ty: 1 / h, attach(i) { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, tex); return i; } };
 }
-function dfbo(w, h, filter) {
-  let a = fbo(w, h, filter), b = fbo(w, h, filter);
+function dfbo(w, h, filter, kind) {
+  let a = fbo(w, h, filter, kind), b = fbo(w, h, filter, kind);
   return { w, h, tx: 1 / w, ty: 1 / h, get read() { return a; }, get write() { return b; }, swap() { const t = a; a = b; b = t; } };
 }
-function size(res) {
-  const ar = gl.drawingBufferWidth / gl.drawingBufferHeight;
-  const min = Math.round(res), max = Math.round(res * Math.max(ar, 1 / ar));
-  return ar > 1 ? [max, min] : [min, max];
-}
+// the pool is an inset rectangle; every simulation lives inside it
+const pool = { x: 0, y: 0, w: 1, h: 1, aspect: 1 };
+function size(res, ar) { return ar > 1 ? [Math.round(res * ar), Math.round(res)] : [Math.round(res), Math.round(res / ar)]; }
 const LIN = ext.linear ? gl.LINEAR : gl.NEAREST;
-let vel, div, curlF, pres, light, bloomA, bloomB;
+let vel, div, curlF, pres, light, surf, parts, partFB, bloomA, bloomB;
 function resize() {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const w = Math.floor(canvas.clientWidth * dpr), h = Math.floor(canvas.clientHeight * dpr);
   if (canvas.width === w && canvas.height === h && vel) return;
   canvas.width = w; canvas.height = h;
-  const [sw, sh] = size(P.simRes), [lw, lh] = size(P.lightRes), [bw, bh] = size(P.bloomRes);
+  const m = Math.round(P.margin * h);
+  pool.x = m / w; pool.y = m / h; pool.w = (w - 2 * m) / w; pool.h = (h - 2 * m) / h;
+  pool.aspect = (w - 2 * m) / (h - 2 * m);
+  const A = pool.aspect;
+  const [sw, sh] = size(P.simRes, A), [lw, lh] = size(P.lightRes, A), [ww, wh] = size(P.waveRes, A);
   vel = dfbo(sw, sh, LIN); div = fbo(sw, sh, gl.NEAREST); curlF = fbo(sw, sh, gl.NEAREST); pres = dfbo(sw, sh, gl.NEAREST);
   light = dfbo(lw, lh, LIN);
   for (const f of [light.read, light.write]) { gl.bindFramebuffer(gl.FRAMEBUFFER, f.fb); gl.clearColor(0, 1, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); }
+  surf = dfbo(ww, wh, LIN);
+  const [bw, bh] = size(P.bloomRes, w / h);
   bloomA = fbo(bw, bh, gl.LINEAR); bloomB = fbo(bw, bh, gl.LINEAR);
+  partFB = fbo(w, h, gl.LINEAR);
+  if (!parts && ext.vtf) {
+    parts = dfbo(NP, NP, gl.NEAREST, ext.pos);
+    const u = use(prog.partInit); blit(parts.write); parts.swap();
+  }
 }
-resize(); addEventListener('resize', resize);
 
 function blit(target) {
   if (target) { gl.viewport(0, 0, target.w, target.h); gl.bindFramebuffer(gl.FRAMEBUFFER, target.fb); }
@@ -303,14 +457,17 @@ function blit(target) {
   gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
 }
 function use(pr, texel) { gl.useProgram(pr.p); if (pr.u.texel && texel) gl.uniform2f(pr.u.texel, texel[0], texel[1]); return pr.u; }
+resize(); addEventListener('resize', resize);
 
 // ================= splats (force into the water) =================
-const aspect = () => canvas.width / canvas.height;
-const splatQueue = [];
-// x,y in 0..1 (y up), dx,dy velocity, r radius scale
+const aspect = () => pool.aspect;
+const splatQueue = [], waveQueue = [];
+// x,y in 0..1 of the pool (y up), dx,dy velocity, r radius scale
 function splat(x, y, dx, dy, r = 1) { splatQueue.push(x, y, dx * P.force, dy * P.force, r); }
+// push the surface up (+) or down (-)
+function wave(x, y, amp, r = 1) { waveQueue.push(x, y, amp * P.waveForce, r); }
 function flushSplats() {
-  const u = use(prog.splat, [vel.tx, vel.ty]);
+  let u = use(prog.splat, [vel.tx, vel.ty]);
   gl.uniform1f(u.aspect, aspect());
   for (let i = 0; i < splatQueue.length; i += 5) {
     gl.uniform1i(u.uTarget, vel.read.attach(0));
@@ -319,11 +476,18 @@ function flushSplats() {
     gl.uniform1f(u.radius, 0.00011 * splatQueue[i + 4] * splatQueue[i + 4]);
     blit(vel.write); vel.swap();
   }
-  splatQueue.length = 0;
+  for (let i = 0; i < waveQueue.length; i += 4) {
+    gl.uniform1i(u.uTarget, surf.read.attach(0));
+    gl.uniform2f(u.point, waveQueue[i], waveQueue[i + 1]);
+    gl.uniform3f(u.color, waveQueue[i + 2], 0, 0);
+    gl.uniform1f(u.radius, 0.00028 * waveQueue[i + 3] * waveQueue[i + 3]);
+    blit(surf.write); surf.swap();
+  }
+  splatQueue.length = 0; waveQueue.length = 0;
 }
 
 // ================= simulation step =================
-function step(dt) {
+function step(dt, time) {
   gl.disable(gl.BLEND);
   flushSplats();
   let u = use(prog.curl, [vel.tx, vel.ty]); gl.uniform1i(u.uVelocity, vel.read.attach(0)); blit(curlF);
@@ -335,34 +499,62 @@ function step(dt) {
   u = use(prog.pressure, [vel.tx, vel.ty]); gl.uniform1i(u.uDivergence, div.attach(0));
   for (let i = 0; i < P.pressureIters; i++) { gl.uniform1i(u.uPressure, pres.read.attach(1)); blit(pres.write); pres.swap(); }
   u = use(prog.gradient, [vel.tx, vel.ty]); gl.uniform1i(u.uPressure, pres.read.attach(0)); gl.uniform1i(u.uVelocity, vel.read.attach(1)); blit(vel.write); vel.swap();
-  // advect velocity
   u = use(prog.advect, [vel.tx, vel.ty]);
   gl.uniform2f(u.dyeTexel, vel.tx, vel.ty);
   gl.uniform1i(u.uVelocity, vel.read.attach(0)); gl.uniform1i(u.uSource, vel.read.attach(0));
   gl.uniform1f(u.dt, dt); gl.uniform1f(u.dissipation, P.velDissipation); blit(vel.write); vel.swap();
-  // advect light + charge with the water
+  // excitation + charge ride the currents
   gl.uniform2f(u.texel, vel.tx, vel.ty);
   gl.uniform2f(u.dyeTexel, light.tx, light.ty);
   gl.uniform1i(u.uVelocity, vel.read.attach(0)); gl.uniform1i(u.uSource, light.read.attach(1));
   gl.uniform1f(u.dissipation, 0.0); blit(light.write); light.swap();
-  // bioluminescent response
   u = use(prog.lumen, [light.tx, light.ty]);
   gl.uniform1i(u.uVelocity, vel.read.attach(0)); gl.uniform1i(u.uLight, light.read.attach(1));
   gl.uniform2f(u.vtexel, vel.tx, vel.ty);
   gl.uniform1f(u.dt, dt); gl.uniform1f(u.threshold, P.threshold); gl.uniform1f(u.gain, P.gain);
   gl.uniform1f(u.decay, P.lightDecay); gl.uniform1f(u.recover, P.recover); gl.uniform1f(u.deplete, P.deplete);
   blit(light.write); light.swap();
+  // surface ripples, a few sub-steps per frame
+  u = use(prog.wave, [surf.tx, surf.ty]);
+  gl.uniform1f(u.c2, P.waveSpeed); gl.uniform1f(u.damp, P.waveDamp);
+  const n = Math.max(1, Math.min(4, Math.round(dt * 180)));
+  for (let i = 0; i < n; i++) { gl.uniform1i(u.uWave, surf.read.attach(0)); blit(surf.write); surf.swap(); }
+  // plankton drift
+  if (parts) {
+    u = use(prog.partStep, [parts.tx, parts.ty]);
+    gl.uniform1i(u.uPos, parts.read.attach(0)); gl.uniform1i(u.uVelocity, vel.read.attach(1));
+    gl.uniform2f(u.vtexel, vel.tx, vel.ty); gl.uniform1f(u.dt, dt); gl.uniform1f(u.time, time);
+    blit(parts.write); parts.swap();
+  }
 }
 function render(t) {
-  let u = use(prog.bright, [light.tx, light.ty]); gl.uniform1i(u.uLight, light.read.attach(0)); blit(bloomA);
+  // plankton points → their own layer
+  gl.bindFramebuffer(gl.FRAMEBUFFER, partFB.fb); gl.viewport(0, 0, partFB.w, partFB.h);
+  gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  if (parts) {
+    const u = use(prog.parts);
+    gl.uniform1i(u.uPos, parts.read.attach(0)); gl.uniform1i(u.uLight, light.read.attach(1));
+    gl.uniform4f(u.pool, pool.x, pool.y, pool.w, pool.h); gl.uniform1f(u.time, t);
+    gl.uniform1f(u.psize, Math.max(1.5, canvas.height / 640)); gl.uniform1f(u.gain, P.plankton);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
+    gl.bindBuffer(gl.ARRAY_BUFFER, partBuf); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.POINTS, 0, NP * NP);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.disable(gl.BLEND);
+  }
+  let u = use(prog.bright, [partFB.tx, partFB.ty]); gl.uniform1i(u.uTexture, partFB.attach(0)); blit(bloomA);
   u = use(prog.blur, [bloomA.tx, bloomA.ty]);
-  for (let i = 0; i < 2; i++) {
+  for (let i = 0; i < 3; i++) {
     gl.uniform1i(u.uTexture, bloomA.attach(0)); gl.uniform2f(u.dir, bloomA.tx * (1 + i), 0); blit(bloomB);
     gl.uniform1i(u.uTexture, bloomB.attach(0)); gl.uniform2f(u.dir, 0, bloomA.ty * (1 + i)); blit(bloomA);
   }
-  u = use(prog.display, [light.tx, light.ty]);
-  gl.uniform1i(u.uLight, light.read.attach(0)); gl.uniform1i(u.uBloom, bloomA.attach(1));
-  gl.uniform1f(u.time, t); gl.uniform1f(u.bloomAmt, P.bloom); gl.uniform2f(u.res, canvas.width, canvas.height);
+  u = use(prog.display, [1 / canvas.width, 1 / canvas.height]);
+  gl.uniform1i(u.uWave, surf.read.attach(0)); gl.uniform1i(u.uParts, partFB.attach(1));
+  gl.uniform1i(u.uBloom, bloomA.attach(2)); gl.uniform1i(u.uLight, light.read.attach(3));
+  gl.uniform4f(u.pool, pool.x, pool.y, pool.w, pool.h);
+  gl.uniform2f(u.res, canvas.width, canvas.height); gl.uniform2f(u.wtexel, surf.tx, surf.ty);
+  gl.uniform1f(u.time, t); gl.uniform1f(u.bloomAmt, P.bloom); gl.uniform1f(u.slope, P.slope);
+  gl.uniform1f(u.lamps, P.lamps); gl.uniform1f(u.poolAspect, pool.aspect); gl.uniform1f(u.usePart, parts ? 1 : 0);
   blit(null);
 }
 
@@ -381,7 +573,7 @@ function play(g, live) {
   const h = s;
   const ox = rand(0.01, 0.99 - w), oy = rand(0.01, Math.max(0.011, 0.99 - h));
   let dur = 0; for (const f of g.f) if (f.length >= 3) dur = Math.max(dur, f[f.length - 3]);
-  players.push({ g, live, ox, oy, w, h, t0: performance.now(), dur: Math.min(dur, 15000), last: -1,
+  players.push({ g, live, ox, oy, w, h, t0: simNow, dur: Math.min(dur, 15000), last: -1,
     gain: live ? 1.45 : rand(0.7, 1.0), ended: false });
 }
 function mapPt(pl, x, y) { return [pl.ox + (x / 1000) * pl.w, 1 - (pl.oy + (y / 1000) * pl.h)]; }
@@ -408,17 +600,18 @@ function updatePlayers(now) {
     // event at start
     if (prev < 0) {
       const f0 = g.f[0]; const [x, y] = mapPt(pl, f0[1], f0[2]);
-      if (g.t === 0) ring(x, y, 0.018 * pl.h, 260 * G);
-      if (g.t === 1) { ring(x, y, 0.018 * pl.h, 300 * G); pl.second = true; }
-      if (g.t === 9) for (const f of g.f) { const [fx, fy] = mapPt(pl, f[1], f[2]); ring(fx, fy, 0.012 * pl.h, 160 * G, 6); }
+      if (g.t === 0) { ring(x, y, 0.018 * pl.h, 260 * G); wave(x, y, 1.6 * G, 1.4); }
+      if (g.t === 1) { ring(x, y, 0.018 * pl.h, 300 * G); wave(x, y, 1.5 * G, 1.3); pl.second = true; }
+      if (g.t === 9) for (const f of g.f) { const [fx, fy] = mapPt(pl, f[1], f[2]); ring(fx, fy, 0.012 * pl.h, 160 * G, 6); wave(fx, fy, 0.9 * G, 1.1); }
     }
-    if (g.t === 1 && pl.second && t > 180) { const f0 = g.f[0]; const [x, y] = mapPt(pl, f0[1], f0[2]); ring(x, y, 0.03 * pl.h, 340 * G, 14); pl.second = false; }
+    if (g.t === 1 && pl.second && t > 180) { const f0 = g.f[0]; const [x, y] = mapPt(pl, f0[1], f0[2]); ring(x, y, 0.03 * pl.h, 340 * G, 14); wave(x, y, 1.9 * G, 1.6); pl.second = false; }
     // hold: a welling, slowly turning upwelling while held
     if (g.t === 2 && t <= pl.dur) {
       const f0 = g.f[0]; const [x, y] = mapPt(pl, f0[1], f0[2]);
       const grow = Math.min(1, t / 2500);
       if (Math.random() < 0.5) { const a = Math.random() * 6.283, r = 0.006 + 0.03 * grow * pl.h;
         splat(x + Math.cos(a) * r / aspect(), y + Math.sin(a) * r, Math.cos(a + 1.2) * 120 * G * (0.4 + grow), Math.sin(a + 1.2) * 120 * G * (0.4 + grow), 0.7 + grow); }
+      if (Math.random() < 0.08) wave(x, y, (0.25 + 0.6 * grow) * G, 1.0 + grow);
     }
     // paths: currents along every finger
     for (const f of g.f) {
@@ -437,6 +630,7 @@ function updatePlayers(now) {
           const u = (j + 0.5) / n;
           splat(x0 + (x1 - x0) * u, y0 + (y1 - y0) * u, vx * mult / Math.sqrt(n), vy * mult / Math.sqrt(n), 1.0);
         }
+        wave((x0 + x1) / 2, (y0 + y1) / 2, Math.min(sp, 2.5) * 0.32 * G * (g.t === 4 ? 1.4 : 1), 1.0);
       }
     }
     // shape-level events at the end of the gesture
@@ -457,6 +651,7 @@ function updatePlayers(now) {
         }
         const [x, y] = mapPt(pl, cx, cy);
         vortex(x, y, 0.035 * pl.h, (turn > 0 ? -1 : 1) * 220 * G); // y flips screen→uv
+        wave(x, y, -1.4 * G, 2.2); // a whirlpool dimple
       }
       if (g.t === 6 && g.f[1]) { // pinch in / spread out
         const a = g.f[0], b = g.f[1];
@@ -464,6 +659,7 @@ function updatePlayers(now) {
         const cx = (a[a.length - 2] + b[b.length - 2]) / 2, cy = (a[a.length - 1] + b[b.length - 1]) / 2;
         const [x, y] = mapPt(pl, cx, cy);
         ring(x, y, 0.04 * pl.h, (d1 > d0 ? 1 : -1) * 300 * G, 14);
+        wave(x, y, (d1 > d0 ? 1.5 : -1.5) * G, 2.0);
       }
     }
     pl.last = t;
@@ -563,16 +759,20 @@ addEventListener('keydown', e => {
 });
 addEventListener('dblclick', () => document.documentElement.requestFullscreen && document.documentElement.requestFullscreen().catch(() => { }));
 
-let lastT = performance.now();
+// one clock for everything, so a test run can step time exactly
+let simNow = performance.now(), lastT = simNow;
+const TEST = qs.get('test') === '1';
 function frame(now) {
+  simNow = now;
   const dt = Math.min((now - lastT) / 1000, 1 / 30); lastT = now;
   resize();
   scheduleArchive(now); drift(now); updatePlayers(now);
-  step(dt); render(now / 1000);
-  requestAnimationFrame(frame);
+  step(dt, now / 1000);
+  if (!TEST) { render(now / 1000); requestAnimationFrame(frame); }
 }
-requestAnimationFrame(frame);
-window.POOL = { play, synth, P, players }; // handy for tuning in the console
+if (!TEST) requestAnimationFrame(frame);
+function tick(n) { for (let i = 0; i < n; i++) frame(simNow + 1000 / 60); render(simNow / 1000); }
+window.POOL = { play, synth, P, players, wave, ext, tick }; // handy for tuning in the console
 </script>
 </body>
 </html>
