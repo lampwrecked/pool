@@ -1,0 +1,578 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>pool</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;cursor:none}
+  canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
+  #info{position:fixed;left:2.2vw;bottom:2vw;color:#5fc8e0;opacity:.42;
+    font:400 1.05vw/1.4 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.08em;pointer-events:none}
+  #info b{font-weight:400;color:#9be6f5}
+  #qrbox{position:fixed;right:2.2vw;bottom:2vw;display:flex;flex-direction:column;align-items:center;gap:.6vw;
+    opacity:.62;pointer-events:none}
+  #qr{width:8.5vw;height:8.5vw;background:#bfe4ee;border-radius:.5vw;padding:.45vw;box-sizing:content-box;display:none}
+  #qrcap{color:#5fc8e0;font:400 .9vw/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.14em}
+  #err{position:fixed;inset:0;display:none;place-items:center;color:#5fc8e0;font:16px ui-monospace,monospace}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="info"><b>pool</b><br><span id="count"></span></div>
+<div id="qrbox"><canvas id="qr"></canvas><div id="qrcap">touch the pool</div></div>
+<div id="err">this display can't run WebGL</div>
+<script>
+/* ============================================================
+   POOL — the sea.  Lampwrecked.
+   Replays every gesture ever made on /input/ as forces in a
+   dark fluid. Light comes only from disturbance: like real
+   dinoflagellates, the water glows where it is sheared, and
+   the glow tires where it has been stirred too much.
+   ============================================================ */
+
+// ---- SETTINGS -------------------------------------------------
+// Paste your Cloudflare Worker address here (no slash at the end).
+// Leave empty to run in demo mode (invented gestures + same-browser live test).
+const API = '';
+// Where the QR code sends people. Empty = this site's /input/ page.
+const TOUCH_URL = '';
+// ---------------------------------------------------------------
+
+const qs = new URLSearchParams(location.search);
+const api = (qs.get('api') || API).replace(/\/$/, '');
+const LOW = qs.get('q') === 'low';
+const SHOW_UI = qs.get('ui') !== '0';
+
+const P = {
+  simRes: LOW ? 96 : 128,
+  lightRes: LOW ? 360 : 640,
+  bloomRes: LOW ? 160 : 256,
+  pressureIters: LOW ? 16 : 24,
+  velDissipation: 0.35,     // how fast currents calm
+  curl: 18,                 // vorticity confinement: curly, organic eddies
+  threshold: 7.0,           // shear needed before plankton light up
+  gain: 8.0,                // light emitted per unit stimulus
+  lightDecay: 1.5,          // afterglow fade (per second)
+  recover: 0.055,           // charge recovery (per second) ~20s to full
+  deplete: 0.9,             // how much each flash tires the water
+  bloom: 1.0,
+  force: 1.0,               // global gesture force
+};
+
+// ================= WebGL setup =================
+const canvas = document.getElementById('c');
+let gl, ext;
+(function init() {
+  const params = { alpha: false, depth: false, stencil: false, antialias: false, preserveDrawingBuffer: false };
+  gl = canvas.getContext('webgl2', params);
+  const isGL2 = !!gl;
+  if (!gl) gl = canvas.getContext('webgl', params) || canvas.getContext('experimental-webgl', params);
+  if (!gl) { document.getElementById('err').style.display = 'grid'; throw new Error('no webgl'); }
+  let halfFloat, linear;
+  if (isGL2) { gl.getExtension('EXT_color_buffer_float'); linear = gl.getExtension('OES_texture_float_linear') || gl.getExtension('OES_texture_half_float_linear'); }
+  else { halfFloat = gl.getExtension('OES_texture_half_float'); linear = gl.getExtension('OES_texture_half_float_linear'); }
+  const type = isGL2 ? gl.HALF_FLOAT : (halfFloat && halfFloat.HALF_FLOAT_OES);
+  const fmt = isGL2 ? { internal: gl.RGBA16F, format: gl.RGBA } : { internal: gl.RGBA, format: gl.RGBA };
+  ext = { isGL2, type, fmt, linear: !!linear };
+  // verify we can render into half-float; fall back to bytes (lower quality) if not
+  if (!type || !canRender(fmt.internal, fmt.format, type)) {
+    ext.type = gl.UNSIGNED_BYTE; ext.fmt = { internal: gl.RGBA, format: gl.RGBA }; ext.byteMode = true; ext.linear = true;
+  }
+})();
+function canRender(internal, format, type) {
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texImage2D(gl.TEXTURE_2D, 0, internal, 4, 4, 0, format, type, null);
+  const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+  const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.deleteTexture(t); gl.deleteFramebuffer(f);
+  return ok;
+}
+
+// ================= shaders =================
+const VS = `
+precision highp float;
+attribute vec2 aPos;
+varying vec2 vUv, vL, vR, vT, vB;
+uniform vec2 texel;
+void main(){
+  vUv = aPos*0.5+0.5;
+  vL = vUv - vec2(texel.x,0.); vR = vUv + vec2(texel.x,0.);
+  vT = vUv + vec2(0.,texel.y); vB = vUv - vec2(0.,texel.y);
+  gl_Position = vec4(aPos,0.,1.);
+}`;
+const HEAD = `precision highp float; precision highp sampler2D;
+varying vec2 vUv, vL, vR, vT, vB;
+`;
+const FS = {
+  splat: `${HEAD}
+uniform sampler2D uTarget; uniform float aspect; uniform vec3 color; uniform vec2 point; uniform float radius;
+void main(){
+  vec2 p = vUv - point; p.x *= aspect;
+  vec3 s = exp(-dot(p,p)/radius) * color;
+  gl_FragColor = vec4(texture2D(uTarget,vUv).xyz + s, 1.);
+}`,
+  advect: `${HEAD}
+uniform sampler2D uVelocity, uSource; uniform vec2 texel, dyeTexel; uniform float dt, dissipation;
+#ifdef MANUAL
+vec4 bilerp(sampler2D s, vec2 uv, vec2 ts){
+  vec2 st = uv/ts - 0.5; vec2 i = floor(st); vec2 f = fract(st);
+  vec4 a = texture2D(s,(i+vec2(.5,.5))*ts), b = texture2D(s,(i+vec2(1.5,.5))*ts);
+  vec4 c = texture2D(s,(i+vec2(.5,1.5))*ts), d = texture2D(s,(i+vec2(1.5,1.5))*ts);
+  return mix(mix(a,b,f.x),mix(c,d,f.x),f.y);
+}
+#endif
+void main(){
+#ifdef MANUAL
+  vec2 coord = vUv - dt*bilerp(uVelocity,vUv,texel).xy*texel;
+  vec4 r = bilerp(uSource,coord,dyeTexel);
+#else
+  vec2 coord = vUv - dt*texture2D(uVelocity,vUv).xy*texel;
+  vec4 r = texture2D(uSource,coord);
+#endif
+  gl_FragColor = r / (1.0 + dissipation*dt);
+}`,
+  divergence: `${HEAD}
+uniform sampler2D uVelocity;
+void main(){
+  float L = texture2D(uVelocity,vL).x, R = texture2D(uVelocity,vR).x;
+  float T = texture2D(uVelocity,vT).y, B = texture2D(uVelocity,vB).y;
+  vec2 C = texture2D(uVelocity,vUv).xy;
+  if(vL.x<0.) L=-C.x; if(vR.x>1.) R=-C.x; if(vT.y>1.) T=-C.y; if(vB.y<0.) B=-C.y;
+  gl_FragColor = vec4(0.5*(R-L+T-B),0.,0.,1.);
+}`,
+  curl: `${HEAD}
+uniform sampler2D uVelocity;
+void main(){
+  float L = texture2D(uVelocity,vL).y, R = texture2D(uVelocity,vR).y;
+  float T = texture2D(uVelocity,vT).x, B = texture2D(uVelocity,vB).x;
+  gl_FragColor = vec4(0.5*(R-L-T+B),0.,0.,1.);
+}`,
+  vorticity: `${HEAD}
+uniform sampler2D uVelocity, uCurl; uniform float curl, dt;
+void main(){
+  float L = texture2D(uCurl,vL).x, R = texture2D(uCurl,vR).x, T = texture2D(uCurl,vT).x, B = texture2D(uCurl,vB).x;
+  float C = texture2D(uCurl,vUv).x;
+  vec2 f = 0.5*vec2(abs(T)-abs(B), abs(R)-abs(L));
+  f /= length(f)+0.0001; f *= curl*C; f.y *= -1.;
+  vec2 v = texture2D(uVelocity,vUv).xy + f*dt;
+  gl_FragColor = vec4(clamp(v,-1000.,1000.),0.,1.);
+}`,
+  clear: `${HEAD}
+uniform sampler2D uTexture; uniform float value;
+void main(){ gl_FragColor = value*texture2D(uTexture,vUv); }`,
+  pressure: `${HEAD}
+uniform sampler2D uPressure, uDivergence;
+void main(){
+  float L = texture2D(uPressure,vL).x, R = texture2D(uPressure,vR).x, T = texture2D(uPressure,vT).x, B = texture2D(uPressure,vB).x;
+  float d = texture2D(uDivergence,vUv).x;
+  gl_FragColor = vec4((L+R+B+T-d)*0.25,0.,0.,1.);
+}`,
+  gradient: `${HEAD}
+uniform sampler2D uPressure, uVelocity;
+void main(){
+  float L = texture2D(uPressure,vL).x, R = texture2D(uPressure,vR).x, T = texture2D(uPressure,vT).x, B = texture2D(uPressure,vB).x;
+  vec2 v = texture2D(uVelocity,vUv).xy - vec2(R-L,T-B);
+  gl_FragColor = vec4(v,0.,1.);
+}`,
+  // the bioluminescence: shear excites plankton; light needs charge; charge tires and recovers
+  lumen: `${HEAD}
+uniform sampler2D uVelocity, uLight; uniform vec2 vtexel; uniform float dt, threshold, gain, decay, recover, deplete;
+void main(){
+  vec2 ex = vec2(vtexel.x,0.), ey = vec2(0.,vtexel.y);
+  vec2 r = texture2D(uVelocity,vUv+ex).xy, l = texture2D(uVelocity,vUv-ex).xy;
+  vec2 t = texture2D(uVelocity,vUv+ey).xy, b = texture2D(uVelocity,vUv-ey).xy;
+  float dudx = 0.5*(r.x-l.x), dvdy = 0.5*(t.y-b.y), dudy = 0.5*(t.x-b.x), dvdx = 0.5*(r.y-l.y);
+  float shear = sqrt((dudx-dvdy)*(dudx-dvdy) + (dudy+dvdx)*(dudy+dvdx));
+  float vort = abs(dvdx-dudy);
+  float strain = shear + 0.6*vort;                // velocity change per sim cell
+  float stim = smoothstep(threshold, threshold*5.0, strain);
+  vec4 L = texture2D(uLight,vUv);
+  float charge = L.g;
+  float emit = stim * charge * gain * dt;
+  float light = L.r * exp(-decay*dt) + emit;
+  charge = clamp(charge + recover*dt*(1.0-charge) - emit*deplete, 0.0, 1.0);
+  gl_FragColor = vec4(min(light,6.0), charge, 0., 1.);
+}`,
+  // pre-pass for bloom: palette at low res
+  bright: `${HEAD}
+uniform sampler2D uLight;
+void main(){ float l = texture2D(uLight,vUv).r; gl_FragColor = vec4(vec3(0.08,0.55,1.0)*l*l*2.4, 1.); }`,
+  blur: `${HEAD}
+uniform sampler2D uTexture; uniform vec2 dir;
+void main(){
+  vec3 c = texture2D(uTexture,vUv).rgb*0.227;
+  c += texture2D(uTexture,vUv+dir*1.385).rgb*0.316; c += texture2D(uTexture,vUv-dir*1.385).rgb*0.316;
+  c += texture2D(uTexture,vUv+dir*3.231).rgb*0.07;  c += texture2D(uTexture,vUv-dir*3.231).rgb*0.07;
+  gl_FragColor = vec4(c,1.);
+}`,
+  display: `${HEAD}
+uniform sampler2D uLight, uBloom; uniform float time, bloomAmt; uniform vec2 res;
+float hash(vec2 p){ p = fract(p*vec2(123.34,456.21)); p += dot(p,p+45.32); return fract(p.x*p.y); }
+vec3 sea(float v){
+  vec3 c = vec3(0.0,0.06,0.16)*smoothstep(0.0,0.5,v);
+  c += vec3(0.0,0.22,0.52)*smoothstep(0.15,1.4,v);
+  c += vec3(0.12,0.62,0.85)*smoothstep(0.9,3.0,v);
+  c += vec3(0.6,0.95,1.0)*smoothstep(2.6,6.0,v);
+  return c;
+}
+void main(){
+  vec4 L = texture2D(uLight,vUv);
+  float l = L.r;
+  // plankton grain: tiny points that twinkle inside the glow
+  vec2 cell = floor(gl_FragCoord.xy / max(2.0, res.y/540.0));
+  float h = hash(cell);
+  float tw = 0.5+0.5*sin(time*(1.5+h*6.0) + h*60.0);
+  float speck = step(0.965,h)*tw*2.2 + (h-0.5)*0.18;
+  float v = l*2.8*(0.78 + speck);
+  vec3 c = sea(v) + texture2D(uBloom,vUv).rgb*bloomAmt;
+  // faint depletion memory: tired water is a hair warmer-dark
+  c = 1.0 - exp(-c*1.35);
+  c += (hash(gl_FragCoord.xy+time)-0.5)/255.0; // dither
+  gl_FragColor = vec4(c,1.);
+}`,
+};
+
+function compile(type, src) {
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s) + '\n' + src);
+  return s;
+}
+const vsObj = compile(gl.VERTEX_SHADER, VS);
+function program(fsSrc, defs = '') {
+  const p = gl.createProgram();
+  gl.attachShader(p, vsObj); gl.attachShader(p, compile(gl.FRAGMENT_SHADER, defs + fsSrc));
+  gl.bindAttribLocation(p, 0, 'aPos'); gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const u = {}; const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) { const name = gl.getActiveUniform(p, i).name; u[name] = gl.getUniformLocation(p, name); }
+  return { p, u };
+}
+const manual = ext.linear ? '' : '#define MANUAL\n';
+const prog = {};
+for (const k in FS) prog[k] = program(FS[k], k === 'advect' ? manual : '');
+
+// fullscreen quad
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, -1, 1, 1, 1, 1, -1]), gl.STATIC_DRAW);
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array([0, 1, 2, 0, 2, 3]), gl.STATIC_DRAW);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0); gl.enableVertexAttribArray(0);
+
+function fbo(w, h, filter) {
+  gl.activeTexture(gl.TEXTURE0);
+  const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texImage2D(gl.TEXTURE_2D, 0, ext.fmt.internal, w, h, 0, ext.fmt.format, ext.type, null);
+  const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  gl.viewport(0, 0, w, h); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  return { tex, fb, w, h, tx: 1 / w, ty: 1 / h, attach(i) { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, tex); return i; } };
+}
+function dfbo(w, h, filter) {
+  let a = fbo(w, h, filter), b = fbo(w, h, filter);
+  return { w, h, tx: 1 / w, ty: 1 / h, get read() { return a; }, get write() { return b; }, swap() { const t = a; a = b; b = t; } };
+}
+function size(res) {
+  const ar = gl.drawingBufferWidth / gl.drawingBufferHeight;
+  const min = Math.round(res), max = Math.round(res * Math.max(ar, 1 / ar));
+  return ar > 1 ? [max, min] : [min, max];
+}
+const LIN = ext.linear ? gl.LINEAR : gl.NEAREST;
+let vel, div, curlF, pres, light, bloomA, bloomB;
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.floor(canvas.clientWidth * dpr), h = Math.floor(canvas.clientHeight * dpr);
+  if (canvas.width === w && canvas.height === h && vel) return;
+  canvas.width = w; canvas.height = h;
+  const [sw, sh] = size(P.simRes), [lw, lh] = size(P.lightRes), [bw, bh] = size(P.bloomRes);
+  vel = dfbo(sw, sh, LIN); div = fbo(sw, sh, gl.NEAREST); curlF = fbo(sw, sh, gl.NEAREST); pres = dfbo(sw, sh, gl.NEAREST);
+  light = dfbo(lw, lh, LIN);
+  for (const f of [light.read, light.write]) { gl.bindFramebuffer(gl.FRAMEBUFFER, f.fb); gl.clearColor(0, 1, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); }
+  bloomA = fbo(bw, bh, gl.LINEAR); bloomB = fbo(bw, bh, gl.LINEAR);
+}
+resize(); addEventListener('resize', resize);
+
+function blit(target) {
+  if (target) { gl.viewport(0, 0, target.w, target.h); gl.bindFramebuffer(gl.FRAMEBUFFER, target.fb); }
+  else { gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight); gl.bindFramebuffer(gl.FRAMEBUFFER, null); }
+  gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+}
+function use(pr, texel) { gl.useProgram(pr.p); if (pr.u.texel && texel) gl.uniform2f(pr.u.texel, texel[0], texel[1]); return pr.u; }
+
+// ================= splats (force into the water) =================
+const aspect = () => canvas.width / canvas.height;
+const splatQueue = [];
+// x,y in 0..1 (y up), dx,dy velocity, r radius scale
+function splat(x, y, dx, dy, r = 1) { splatQueue.push(x, y, dx * P.force, dy * P.force, r); }
+function flushSplats() {
+  const u = use(prog.splat, [vel.tx, vel.ty]);
+  gl.uniform1f(u.aspect, aspect());
+  for (let i = 0; i < splatQueue.length; i += 5) {
+    gl.uniform1i(u.uTarget, vel.read.attach(0));
+    gl.uniform2f(u.point, splatQueue[i], splatQueue[i + 1]);
+    gl.uniform3f(u.color, splatQueue[i + 2], splatQueue[i + 3], 0);
+    gl.uniform1f(u.radius, 0.00011 * splatQueue[i + 4] * splatQueue[i + 4]);
+    blit(vel.write); vel.swap();
+  }
+  splatQueue.length = 0;
+}
+
+// ================= simulation step =================
+function step(dt) {
+  gl.disable(gl.BLEND);
+  flushSplats();
+  let u = use(prog.curl, [vel.tx, vel.ty]); gl.uniform1i(u.uVelocity, vel.read.attach(0)); blit(curlF);
+  u = use(prog.vorticity, [vel.tx, vel.ty]);
+  gl.uniform1i(u.uVelocity, vel.read.attach(0)); gl.uniform1i(u.uCurl, curlF.attach(1));
+  gl.uniform1f(u.curl, P.curl); gl.uniform1f(u.dt, dt); blit(vel.write); vel.swap();
+  u = use(prog.divergence, [vel.tx, vel.ty]); gl.uniform1i(u.uVelocity, vel.read.attach(0)); blit(div);
+  u = use(prog.clear, [vel.tx, vel.ty]); gl.uniform1i(u.uTexture, pres.read.attach(0)); gl.uniform1f(u.value, 0.8); blit(pres.write); pres.swap();
+  u = use(prog.pressure, [vel.tx, vel.ty]); gl.uniform1i(u.uDivergence, div.attach(0));
+  for (let i = 0; i < P.pressureIters; i++) { gl.uniform1i(u.uPressure, pres.read.attach(1)); blit(pres.write); pres.swap(); }
+  u = use(prog.gradient, [vel.tx, vel.ty]); gl.uniform1i(u.uPressure, pres.read.attach(0)); gl.uniform1i(u.uVelocity, vel.read.attach(1)); blit(vel.write); vel.swap();
+  // advect velocity
+  u = use(prog.advect, [vel.tx, vel.ty]);
+  gl.uniform2f(u.dyeTexel, vel.tx, vel.ty);
+  gl.uniform1i(u.uVelocity, vel.read.attach(0)); gl.uniform1i(u.uSource, vel.read.attach(0));
+  gl.uniform1f(u.dt, dt); gl.uniform1f(u.dissipation, P.velDissipation); blit(vel.write); vel.swap();
+  // advect light + charge with the water
+  gl.uniform2f(u.texel, vel.tx, vel.ty);
+  gl.uniform2f(u.dyeTexel, light.tx, light.ty);
+  gl.uniform1i(u.uVelocity, vel.read.attach(0)); gl.uniform1i(u.uSource, light.read.attach(1));
+  gl.uniform1f(u.dissipation, 0.0); blit(light.write); light.swap();
+  // bioluminescent response
+  u = use(prog.lumen, [light.tx, light.ty]);
+  gl.uniform1i(u.uVelocity, vel.read.attach(0)); gl.uniform1i(u.uLight, light.read.attach(1));
+  gl.uniform2f(u.vtexel, vel.tx, vel.ty);
+  gl.uniform1f(u.dt, dt); gl.uniform1f(u.threshold, P.threshold); gl.uniform1f(u.gain, P.gain);
+  gl.uniform1f(u.decay, P.lightDecay); gl.uniform1f(u.recover, P.recover); gl.uniform1f(u.deplete, P.deplete);
+  blit(light.write); light.swap();
+}
+function render(t) {
+  let u = use(prog.bright, [light.tx, light.ty]); gl.uniform1i(u.uLight, light.read.attach(0)); blit(bloomA);
+  u = use(prog.blur, [bloomA.tx, bloomA.ty]);
+  for (let i = 0; i < 2; i++) {
+    gl.uniform1i(u.uTexture, bloomA.attach(0)); gl.uniform2f(u.dir, bloomA.tx * (1 + i), 0); blit(bloomB);
+    gl.uniform1i(u.uTexture, bloomB.attach(0)); gl.uniform2f(u.dir, 0, bloomA.ty * (1 + i)); blit(bloomA);
+  }
+  u = use(prog.display, [light.tx, light.ty]);
+  gl.uniform1i(u.uLight, light.read.attach(0)); gl.uniform1i(u.uBloom, bloomA.attach(1));
+  gl.uniform1f(u.time, t); gl.uniform1f(u.bloomAmt, P.bloom); gl.uniform2f(u.res, canvas.width, canvas.height);
+  blit(null);
+}
+
+// ================= gestures =================
+// record: { t:type, a:aspect*1000, f:[[ms,x,y, ms,x,y, ...], ...] }  x,y in 0..1000 (y down)
+// types: 0 tap 1 double 2 hold 3 drag 4 flick 5 swirl 6 pinch 7 rotate 8 two-finger drag 9 multi
+const players = [];
+const rand = (a, b) => a + Math.random() * (b - a);
+
+function play(g, live) {
+  if (!g || !Array.isArray(g.f) || !g.f.length) return;
+  const A = aspect();
+  const ga = Math.max(0.2, Math.min(3, (g.a || 500) / 1000));      // phone w/h
+  const s = live ? rand(0.75, 0.95) : rand(0.45, 0.95);             // region height in screen heights
+  const w = Math.min(0.98, s * ga / A);                              // region width in uv
+  const h = s;
+  const ox = rand(0.01, 0.99 - w), oy = rand(0.01, Math.max(0.011, 0.99 - h));
+  let dur = 0; for (const f of g.f) if (f.length >= 3) dur = Math.max(dur, f[f.length - 3]);
+  players.push({ g, live, ox, oy, w, h, t0: performance.now(), dur: Math.min(dur, 15000), last: -1,
+    gain: live ? 1.45 : rand(0.7, 1.0), ended: false });
+}
+function mapPt(pl, x, y) { return [pl.ox + (x / 1000) * pl.w, 1 - (pl.oy + (y / 1000) * pl.h)]; }
+
+function ring(x, y, rad, strength, n = 10, twist = 0) {
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    const cx = x + Math.cos(a) * rad / aspect(), cy = y + Math.sin(a) * rad;
+    splat(cx, cy, (Math.cos(a) + -Math.sin(a) * twist) * strength, (Math.sin(a) + Math.cos(a) * twist) * strength, 0.9);
+  }
+}
+function vortex(x, y, rad, strength, n = 12) { // pure rotation
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    splat(x + Math.cos(a) * rad / aspect(), y + Math.sin(a) * rad, -Math.sin(a) * strength, Math.cos(a) * strength, 1.1);
+  }
+}
+
+function updatePlayers(now) {
+  for (let k = players.length - 1; k >= 0; k--) {
+    const pl = players[k], g = pl.g;
+    const t = now - pl.t0, prev = pl.last;
+    const G = pl.gain;
+    // event at start
+    if (prev < 0) {
+      const f0 = g.f[0]; const [x, y] = mapPt(pl, f0[1], f0[2]);
+      if (g.t === 0) ring(x, y, 0.018 * pl.h, 260 * G);
+      if (g.t === 1) { ring(x, y, 0.018 * pl.h, 300 * G); pl.second = true; }
+      if (g.t === 9) for (const f of g.f) { const [fx, fy] = mapPt(pl, f[1], f[2]); ring(fx, fy, 0.012 * pl.h, 160 * G, 6); }
+    }
+    if (g.t === 1 && pl.second && t > 180) { const f0 = g.f[0]; const [x, y] = mapPt(pl, f0[1], f0[2]); ring(x, y, 0.03 * pl.h, 340 * G, 14); pl.second = false; }
+    // hold: a welling, slowly turning upwelling while held
+    if (g.t === 2 && t <= pl.dur) {
+      const f0 = g.f[0]; const [x, y] = mapPt(pl, f0[1], f0[2]);
+      const grow = Math.min(1, t / 2500);
+      if (Math.random() < 0.5) { const a = Math.random() * 6.283, r = 0.006 + 0.03 * grow * pl.h;
+        splat(x + Math.cos(a) * r / aspect(), y + Math.sin(a) * r, Math.cos(a + 1.2) * 120 * G * (0.4 + grow), Math.sin(a + 1.2) * 120 * G * (0.4 + grow), 0.7 + grow); }
+    }
+    // paths: currents along every finger
+    for (const f of g.f) {
+      for (let i = 3; i < f.length; i += 3) {
+        const ta = f[i - 3], tb = f[i];
+        if (tb <= prev || tb > t) continue;
+        const [x0, y0] = mapPt(pl, f[i - 2], f[i - 1]), [x1, y1] = mapPt(pl, f[i + 1], f[i + 2]);
+        const sec = Math.max(0.012, (tb - ta) / 1000);
+        let vx = (x1 - x0) / sec, vy = (y1 - y0) / sec;
+        const sp = Math.hypot(vx * aspect(), vy);
+        const cap = 3.5; if (sp > cap) { vx *= cap / sp; vy *= cap / sp; }
+        const dist = Math.hypot((x1 - x0) * aspect(), y1 - y0);
+        const n = Math.max(1, Math.min(6, Math.ceil(dist / 0.012)));
+        const mult = (g.t === 4 ? 1.5 : 1) * G * 260;
+        for (let j = 0; j < n; j++) {
+          const u = (j + 0.5) / n;
+          splat(x0 + (x1 - x0) * u, y0 + (y1 - y0) * u, vx * mult / Math.sqrt(n), vy * mult / Math.sqrt(n), 1.0);
+        }
+      }
+    }
+    // shape-level events at the end of the gesture
+    if (t >= pl.dur && !pl.ended) {
+      pl.ended = true;
+      if (g.t === 5 || g.t === 7) { // swirl / rotate: leave a vortex at the centroid, spin = direction drawn
+        const f = g.f[0]; let cx = 0, cy = 0, n = 0, turn = 0;
+        for (let i = 0; i < f.length; i += 3) { cx += f[i + 1]; cy += f[i + 2]; n++; }
+        cx /= n; cy /= n;
+        for (let i = 6; i < f.length; i += 3) {
+          const a1 = Math.atan2(f[i - 1] - f[i - 4], f[i - 2] - f[i - 5]), a2 = Math.atan2(f[i + 2] - f[i - 1], f[i + 1] - f[i - 2]);
+          let d = a2 - a1; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; turn += d;
+        }
+        if (g.t === 7 && g.f[1]) { // rotation sign from two fingers
+          const a = g.f[0], b = g.f[1];
+          const s0 = Math.atan2(b[2] - a[2], b[1] - a[1]), s1 = Math.atan2(b[b.length - 1] - a[a.length - 1], b[b.length - 2] - a[a.length - 2]);
+          turn = s1 - s0;
+        }
+        const [x, y] = mapPt(pl, cx, cy);
+        vortex(x, y, 0.035 * pl.h, (turn > 0 ? -1 : 1) * 220 * G); // y flips screen→uv
+      }
+      if (g.t === 6 && g.f[1]) { // pinch in / spread out
+        const a = g.f[0], b = g.f[1];
+        const d0 = Math.hypot(b[1] - a[1], b[2] - a[2]), d1 = Math.hypot(b[b.length - 2] - a[a.length - 2], b[b.length - 1] - a[a.length - 1]);
+        const cx = (a[a.length - 2] + b[b.length - 2]) / 2, cy = (a[a.length - 1] + b[b.length - 1]) / 2;
+        const [x, y] = mapPt(pl, cx, cy);
+        ring(x, y, 0.04 * pl.h, (d1 > d0 ? 1 : -1) * 300 * G, 14);
+      }
+    }
+    pl.last = t;
+    if (t > pl.dur + 400) players.splice(k, 1);
+  }
+}
+
+// ================= archive + live =================
+let liveCursor = 0, total = 0, archive = [], demo = !api;
+const countEl = document.getElementById('count');
+function setCount(n) { total = n; countEl.textContent = n ? n.toLocaleString() + ' movements' : ''; }
+async function getJSON(path) { const r = await fetch(api + path, { cache: 'no-store' }); if (!r.ok) throw new Error(r.status); return r.json(); }
+async function refillArchive() {
+  if (demo) return;
+  try { const d = await getJSON('/random?n=60'); archive = archive.concat(d.items || []); setCount(d.max || total); } catch (e) { }
+}
+async function pollLive() {
+  if (demo) return;
+  try {
+    const d = await getJSON('/since?id=' + liveCursor);
+    if (liveCursor === 0) { liveCursor = d.max || 0; setCount(d.max || 0); return; } // start live from now
+    for (const it of d.items || []) { liveCursor = Math.max(liveCursor, it.id); play(it.g, true); }
+    if (d.max) setCount(d.max);
+  } catch (e) { }
+}
+// same-browser live link (works in demo mode: open /touch/ in another tab)
+try { new BroadcastChannel('pool').onmessage = (e) => { if (demo) { play(e.data, true); setCount(total + 1); } }; } catch (e) { }
+
+// invented gestures for demo mode, so the sea is never empty before an archive exists
+function synth() {
+  const types = [0, 0, 1, 2, 3, 3, 3, 4, 4, 5, 5, 6, 7, 8, 9];
+  const t = types[(Math.random() * types.length) | 0];
+  const f = [], pts = (fn, n, dt) => { const a = []; for (let i = 0; i < n; i++) { const p = fn(i / (n - 1)); a.push(Math.round(i * dt), Math.round(p[0]), Math.round(p[1])); } return a; };
+  const cx = rand(250, 750), cy = rand(250, 750), ang = rand(0, 6.28);
+  if (t === 0 || t === 1) f.push([0, cx | 0, cy | 0, 90, cx | 0, cy | 0]);
+  if (t === 2) f.push(pts(() => [cx + rand(-3, 3), cy + rand(-3, 3)], 40, 60));
+  if (t === 3 || t === 4) { const L = rand(200, 500), n = t === 4 ? 6 : 30, bend = rand(-0.6, 0.6);
+    f.push(pts(u => [cx + Math.cos(ang + bend * u) * L * (u - .5), cy + Math.sin(ang + bend * u) * L * (u - .5)], n, t === 4 ? 25 : 40)); }
+  if (t === 5) { const R = rand(80, 200), turns = rand(1.2, 3), dir = Math.random() < .5 ? 1 : -1;
+    f.push(pts(u => [cx + Math.cos(ang + dir * u * turns * 6.28) * R * (1 - u * .3), cy + Math.sin(ang + dir * u * turns * 6.28) * R * (1 - u * .3)], 60, 30)); }
+  if (t === 6) { const s = Math.random() < .5 ? 1 : -1, d0 = s > 0 ? 60 : 260, d1 = s > 0 ? 300 : 50;
+    for (const k of [1, -1]) f.push(pts(u => [cx + Math.cos(ang) * k * (d0 + (d1 - d0) * u), cy + Math.sin(ang) * k * (d0 + (d1 - d0) * u)], 20, 30)); }
+  if (t === 7) { const R = rand(90, 180), sw = rand(1, 2) * (Math.random() < .5 ? 1 : -1);
+    for (const k of [0, Math.PI]) f.push(pts(u => [cx + Math.cos(ang + k + sw * u) * R, cy + Math.sin(ang + k + sw * u) * R], 24, 30)); }
+  if (t === 8) { const L = rand(200, 400); for (const k of [-40, 40]) f.push(pts(u => [cx + Math.cos(ang) * L * (u - .5) - Math.sin(ang) * k, cy + Math.sin(ang) * L * (u - .5) + Math.cos(ang) * k], 25, 35)); }
+  if (t === 9) for (let k = 0; k < 4; k++) { const ox = rand(-120, 120), oy = rand(-120, 120), dx = rand(-150, 150), dy = rand(-150, 150);
+    f.push(pts(u => [cx + ox + dx * u, cy + oy + dy * u], 20, 35)); }
+  return { t, a: 462, f };
+}
+
+let nextSpawn = 0;
+function scheduleArchive(now) {
+  if (now < nextSpawn) return;
+  const busy = players.filter(p => !p.live).length;
+  if (busy < 4) {
+    let g = null;
+    if (archive.length) g = archive.splice((Math.random() * archive.length) | 0, 1)[0].g;
+    else if (demo || total === 0) g = synth();
+    if (g) play(g, false);
+  }
+  nextSpawn = now + rand(900, 3200);
+  if (!demo && archive.length < 15) refillArchive();
+}
+// a barely-there ambient drift: below the glow threshold, keeps the water alive between visitors
+let nextDrift = 0;
+function drift(now) {
+  if (now < nextDrift) return;
+  splat(rand(0, 1), rand(0, 1), rand(-1, 1) * 14, rand(-1, 1) * 14, 6);
+  nextDrift = now + rand(1500, 4000);
+}
+
+// ================= QR =================
+function drawQR() {
+  if (!SHOW_UI) { document.getElementById('qrbox').style.display = 'none'; document.getElementById('info').style.display = 'none'; return; }
+  const url = TOUCH_URL || new URL('../input/', location.href.split('?')[0]).href;
+  const s = document.createElement('script');
+  s.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js';
+  s.onload = () => {
+    const q = qrcode(0, 'M'); q.addData(url); q.make();
+    const n = q.getModuleCount(), cv = document.getElementById('qr'), px = 8;
+    cv.width = cv.height = n * px; const c = cv.getContext('2d');
+    c.fillStyle = '#bfe4ee'; c.fillRect(0, 0, n * px, n * px); c.fillStyle = '#021018';
+    for (let r = 0; r < n; r++) for (let k = 0; k < n; k++) if (q.isDark(r, k)) c.fillRect(k * px, r * px, px, px);
+    cv.style.display = 'block';
+  };
+  s.onerror = () => { document.getElementById('qrcap').textContent = url.replace(/^https?:\/\//, ''); };
+  document.head.appendChild(s);
+}
+drawQR();
+
+// ================= loop =================
+if (!demo) { pollLive(); refillArchive(); setInterval(pollLive, 2000); setInterval(refillArchive, 90000); }
+else setCount(0);
+addEventListener('keydown', e => {
+  if (e.key === 'f') (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen()).catch(() => { });
+  if (e.key === 'g') play(synth(), true); // test: drop a "live" gesture
+});
+addEventListener('dblclick', () => document.documentElement.requestFullscreen && document.documentElement.requestFullscreen().catch(() => { }));
+
+let lastT = performance.now();
+function frame(now) {
+  const dt = Math.min((now - lastT) / 1000, 1 / 30); lastT = now;
+  resize();
+  scheduleArchive(now); drift(now); updatePlayers(now);
+  step(dt); render(now / 1000);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+window.POOL = { play, synth, P, players }; // handy for tuning in the console
+</script>
+</body>
+</html>

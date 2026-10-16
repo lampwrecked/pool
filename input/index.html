@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<title>pool · input</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;overscroll-behavior:none;
+    -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}
+  canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+  .t{position:fixed;color:#fff;font:400 11px/1.3 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.14em;pointer-events:none}
+  #name{left:16px;bottom:calc(14px + env(safe-area-inset-bottom));opacity:.35}
+  #hint{left:0;right:0;top:50%;text-align:center;opacity:0;transition:opacity 1.2s}
+  #sent{right:16px;bottom:calc(14px + env(safe-area-inset-bottom));opacity:0;transition:opacity .25s}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="t" id="name">pool</div>
+<div class="t" id="hint">touch</div>
+<div class="t" id="sent">→ pool</div>
+<script>
+/* ============================================================
+   POOL — input.  Lampwrecked.
+   A black-and-white lattice. Your hand disturbs it; it settles.
+   Every gesture is recorded as numbers only (no text, no ids)
+   and released into the pool on the wall.
+   ============================================================ */
+
+// ---- SETTINGS -------------------------------------------------
+// Same Cloudflare Worker address as the wall page (no slash at the end).
+const API = '';
+// ---------------------------------------------------------------
+const api = (new URLSearchParams(location.search).get('api') || API).replace(/\/$/, '');
+
+const cv = document.getElementById('c'), ctx = cv.getContext('2d', { alpha: false });
+let W, H, DPR, N, hx, hy, px, py, vx, vy, gap;
+function build() {
+  DPR = Math.min(devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  cv.width = W * DPR; cv.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  gap = Math.max(11, Math.min(18, Math.sqrt(W * H / 2200)));
+  const cols = Math.ceil(W / gap) + 1, rows = Math.ceil(H / gap) + 1;
+  const ox = (W - (cols - 1) * gap) / 2, oy = (H - (rows - 1) * gap) / 2;
+  N = cols * rows;
+  hx = new Float32Array(N); hy = new Float32Array(N); px = new Float32Array(N); py = new Float32Array(N);
+  vx = new Float32Array(N); vy = new Float32Array(N);
+  let i = 0;
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) { hx[i] = px[i] = ox + c * gap; hy[i] = py[i] = oy + r * gap; i++; }
+}
+build(); addEventListener('resize', build);
+
+// ---------- recording ----------
+const fingers = new Map();   // pointerId -> {idx, x,y, lx,ly, downAt, lastRec}
+let gesture = null;          // {t0, f:[[...]], maxFingers}
+let pendingTap = null;       // held briefly so a second tap can make it a double tap
+const SAMPLE_MS = 33, MAX_MS = 15000, MAX_PTS = 450;
+
+function rec(fg, now, x, y, force) {
+  const arr = gesture.f[fg.idx];
+  const t = Math.round(now - gesture.t0);
+  if (!force && t - fg.lastRec < SAMPLE_MS) return;
+  if (arr.length >= MAX_PTS * 3 || t > MAX_MS) return;
+  fg.lastRec = t;
+  arr.push(t, Math.round(x / W * 1000), Math.round(y / H * 1000));
+}
+
+cv.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  try { cv.setPointerCapture(e.pointerId); } catch (_) { }
+  const now = performance.now();
+  if (!gesture) gesture = { t0: now, f: [], maxFingers: 0 };
+  if (gesture.f.length >= 5) return;
+  const fg = { idx: gesture.f.length, x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, downAt: now, lastRec: -1e9 };
+  gesture.f.push([]); fingers.set(e.pointerId, fg);
+  gesture.maxFingers = Math.max(gesture.maxFingers, fingers.size);
+  rec(fg, now, fg.x, fg.y, true);
+  pushRadial(fg.x, fg.y, 5.5, 46);
+  hideHint();
+}, { passive: false });
+
+cv.addEventListener('pointermove', e => {
+  const fg = fingers.get(e.pointerId); if (!fg || !gesture) return;
+  e.preventDefault();
+  let evs = e.getCoalescedEvents ? e.getCoalescedEvents() : null;
+  if (!evs || !evs.length) evs = [e];
+  for (const ev of evs) { fg.x = ev.clientX; fg.y = ev.clientY; rec(fg, performance.now(), fg.x, fg.y, false); }
+}, { passive: false });
+
+function up(e) {
+  const fg = fingers.get(e.pointerId); if (!fg || !gesture) return;
+  rec(fg, performance.now(), e.clientX, e.clientY, true);
+  fingers.delete(e.pointerId);
+  if (fingers.size === 0) { finish(gesture); gesture = null; }
+}
+cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
+// stop iOS from zooming / scrolling / long-press menus
+for (const ev of ['gesturestart', 'gesturechange', 'contextmenu', 'touchmove'])
+  document.addEventListener(ev, e => e.preventDefault(), { passive: false });
+
+// ---------- what kind of gesture was it? ----------
+// 0 tap 1 double 2 hold 3 drag 4 flick 5 swirl 6 pinch 7 rotate 8 two-finger drag 9 multi
+function classify(g) {
+  const f = g.f.filter(a => a.length >= 3);
+  const P = a => ({ n: a.length / 3, t: i => a[i * 3], x: i => a[i * 3 + 1] * W / 1000, y: i => a[i * 3 + 2] * H / 1000 });
+  if (g.maxFingers >= 3) return 9;
+  if (g.maxFingers === 2 && f.length >= 2) {
+    const a = P(f[0]), b = P(f[1]);
+    const d = (i, j) => Math.hypot(a.x(i) - b.x(j), a.y(i) - b.y(j));
+    const d0 = d(0, 0), d1 = d(a.n - 1, b.n - 1);
+    const ang = (i, j) => Math.atan2(b.y(j) - a.y(i), b.x(j) - a.x(i));
+    let dA = ang(a.n - 1, b.n - 1) - ang(0, 0); while (dA > Math.PI) dA -= 2 * Math.PI; while (dA < -Math.PI) dA += 2 * Math.PI;
+    if (Math.abs(dA) > 0.45) return 7;
+    if (Math.abs(d1 / Math.max(d0, 1) - 1) > 0.25) return 6;
+    return 8;
+  }
+  const a = P(f[0]); if (!a.n) return 0;
+  let len = 0, turn = 0, prevAng = null;
+  for (let i = 1; i < a.n; i++) {
+    const dx = a.x(i) - a.x(i - 1), dy = a.y(i) - a.y(i - 1), s = Math.hypot(dx, dy); len += s;
+    if (s > 2) { const an = Math.atan2(dy, dx); if (prevAng !== null) { let d = an - prevAng; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; turn += d; } prevAng = an; }
+  }
+  const dur = a.t(a.n - 1);
+  if (len < 14) return dur < 320 ? 0 : 2;
+  if (Math.abs(turn) > 4.2) return 5;
+  // release speed over the last ~100ms
+  let k = a.n - 1; while (k > 0 && a.t(a.n - 1) - a.t(k) < 100) k--;
+  const sp = Math.hypot(a.x(a.n - 1) - a.x(k), a.y(a.n - 1) - a.y(k)) / Math.max(16, a.t(a.n - 1) - a.t(k));
+  if (sp > 1.1 && dur < 700) return 4;
+  return 3;
+}
+
+function finish(g) {
+  const f = g.f.filter(a => a.length >= 3);
+  if (!f.length) return;
+  const rec = { t: classify(g), a: Math.round(W / H * 1000), f };
+  if (rec.t === 0) {
+    // wait briefly: a second tap nearby turns this into a double tap
+    if (pendingTap && performance.now() - pendingTap.at < 350 &&
+        Math.hypot(f[0][1] - pendingTap.r.f[0][1], f[0][2] - pendingTap.r.f[0][2]) < 60) {
+      clearTimeout(pendingTap.timer); pendingTap.r.t = 1; send(pendingTap.r); pendingTap = null; return;
+    }
+    const p = { r: rec, at: performance.now() };
+    p.timer = setTimeout(() => { send(p.r); if (pendingTap === p) pendingTap = null; }, 360);
+    pendingTap = p; return;
+  }
+  send(rec);
+}
+
+// ---------- release into the pool ----------
+let bc = null; try { bc = new BroadcastChannel('pool'); } catch (e) { }
+const queue = JSON.parse(localStorage.getItem('pool-q') || '[]');
+let lastSend = 0;
+async function send(rec) {
+  flash();
+  if (bc) bc.postMessage(rec);            // same-browser preview (demo mode)
+  if (!api) return;
+  if (performance.now() - lastSend < 150) return; // gentle client-side rate limit
+  lastSend = performance.now();
+  try {
+    const r = await fetch(api + '/g', { method: 'POST', headers: { 'content-type': 'text/plain' }, body: JSON.stringify(rec), keepalive: true });
+    if (!r.ok && r.status >= 500) throw 0;
+  } catch (e) { queue.push(rec); if (queue.length > 30) queue.shift(); save(); }
+}
+function save() { try { localStorage.setItem('pool-q', JSON.stringify(queue)); } catch (e) { } }
+setInterval(async () => {   // retry anything that failed (bad gallery wifi)
+  if (!api || !queue.length) return;
+  const rec = queue[0];
+  try { const r = await fetch(api + '/g', { method: 'POST', headers: { 'content-type': 'text/plain' }, body: JSON.stringify(rec) }); if (r.ok || r.status < 500) { queue.shift(); save(); } } catch (e) { }
+}, 4000);
+
+const sentEl = document.getElementById('sent'); let sentT;
+function flash() { sentEl.style.opacity = .45; clearTimeout(sentT); sentT = setTimeout(() => sentEl.style.opacity = 0, 900); }
+const hint = document.getElementById('hint'); let hinted = false;
+setTimeout(() => { if (!hinted) hint.style.opacity = .4; }, 900);
+function hideHint() { hinted = true; hint.style.opacity = 0; }
+
+// ---------- the lattice ----------
+function pushRadial(x, y, strength, R) {
+  for (let i = 0; i < N; i++) {
+    const dx = px[i] - x, dy = py[i] - y, d = Math.hypot(dx, dy);
+    if (d < R && d > 0.01) { const f = (1 - d / R) ** 2 * strength; vx[i] += dx / d * f; vy[i] += dy / d * f; }
+  }
+}
+function stir(fg, now) {
+  const mvx = fg.x - fg.lx, mvy = fg.y - fg.ly; fg.lx = fg.x; fg.ly = fg.y;
+  const sp = Math.hypot(mvx, mvy);
+  const R = 58 + Math.min(40, sp * 1.5);
+  const still = sp < 0.6, held = now - fg.downAt;
+  for (let i = 0; i < N; i++) {
+    const dx = px[i] - fg.x, dy = py[i] - fg.y;
+    if (dx > R || dx < -R || dy > R || dy < -R) continue;
+    const d = Math.hypot(dx, dy); if (d >= R) continue;
+    const f = (1 - d / R) ** 2;
+    vx[i] += mvx * f * 0.42; vy[i] += mvy * f * 0.42;
+    if (still && held > 250) {          // holding: the lattice trembles and slowly turns
+      const amp = Math.min(1.6, (held - 250) / 1500) * f;
+      vx[i] += (Math.random() - .5) * amp - dy / (d + 1) * amp * 0.35;
+      vy[i] += (Math.random() - .5) * amp + dx / (d + 1) * amp * 0.35;
+    }
+  }
+}
+
+const buckets = [[], [], [], []];
+const alphas = [0.28, 0.5, 0.75, 1];
+function frame(now) {
+  for (const fg of fingers.values()) stir(fg, now);
+  for (const b of buckets) b.length = 0;
+  for (let i = 0; i < N; i++) {
+    vx[i] += (hx[i] - px[i]) * 0.018; vy[i] += (hy[i] - py[i]) * 0.018;
+    vx[i] *= 0.915; vy[i] *= 0.915;
+    px[i] += vx[i]; py[i] += vy[i];
+    const disp = Math.abs(px[i] - hx[i]) + Math.abs(py[i] - hy[i]) + Math.abs(vx[i]) * 3 + Math.abs(vy[i]) * 3;
+    buckets[disp < 1.5 ? 0 : disp < 7 ? 1 : disp < 20 ? 2 : 3].push(i);
+  }
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  for (let b = 0; b < 4; b++) {
+    ctx.fillStyle = `rgba(255,255,255,${alphas[b]})`;
+    const s = 1.3 + b * 0.55, h = s / 2;
+    for (const i of buckets[b]) ctx.fillRect(px[i] - h, py[i] - h, s, s);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
