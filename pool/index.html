@@ -296,6 +296,7 @@ void main(){
   // the room: white glossy deck, coping, perspective walls down to a deep floor, lamp grid mirrored on the water
   display: `${HEAD}
 uniform sampler2D uWave, uParts, uBloom, uLight;
+uniform sampler2D uText; uniform vec3 textInfo; // lettering: columns, rows, first tile row
 uniform vec4 pool; uniform vec2 res, wtexel, lampGrid; uniform float time, bloomAmt, slope, lamps, poolAspect, usePart, rim, depthScale;
 float hash(vec2 p){ p = fract(p*vec2(123.34,456.21)); p += dot(p,p+45.32); return fract(p.x*p.y); }
 // x = tile (1) vs grout (0), y = per-tile variation, z = bevel, w = tile id hash 2
@@ -367,7 +368,7 @@ void main(){
     vec2 kk = abs(q)/half_;
     float k = max(kk.x, kk.y);
     float s = depthScale;                        // how small the floor looks = how deep it is
-    float cam = 1.6, D = cam/s - cam;
+    float cam = 1.0, D = cam/s - cam;
     vec3 tileCol; float z;
     float tileSize = 1.0/34.0;
     if (k <= s) {
@@ -396,6 +397,18 @@ void main(){
       vec2 wc = (kk.x >= kk.y) ? vec2(q.y/f, z) : vec2(q.x/f, z);
       vec4 t = tiles(wc/tileSize, 0.07);
       tileCol = mix(vec3(0.45,0.5,0.52), vec3(0.92,0.95,0.96)*(0.94+0.1*t.y), t.x);
+      // lettering on the far (top) wall, one letter per tile, like depth markers
+      if (kk.y > kk.x && q.y > 0.0) {
+        vec2 ti = floor(wc/tileSize);
+        // each letter is one tile wide and two tiles tall
+        float colI = ti.x + floor(textInfo.x*0.5), rr = ti.y - textInfo.z, rowI = floor(rr/2.0);
+        if (colI >= 0.0 && colI < textInfo.x && rr >= 0.0 && rowI < textInfo.y) {
+          vec2 fr = fract(wc/tileSize); fr.y = (rr - rowI*2.0 + fr.y)*0.5;
+          vec2 tu = (vec2(colI, rowI) + fr) / textInfo.xy;
+          float ink = texture2D(uText, tu).a;
+          tileCol = mix(tileCol, vec3(0.04,0.1,0.26), ink * t.x);
+        }
+      }
       tileCol *= (kk.x >= kk.y) ? 0.82 : 0.95;  // walls face different ways to the light
       tileCol *= 1.0 + clamp(-lap*0.5, -0.4, 1.0);
     }
@@ -472,6 +485,29 @@ const pool = { x: 0, y: 0, w: 1, h: 1, aspect: 1, rim: 20, lx: 8, ly: 5 };
 function size(res, ar) { return ar > 1 ? [Math.round(res * ar), Math.round(res)] : [Math.round(res), Math.round(res / ar)]; }
 const LIN = ext.linear ? gl.LINEAR : gl.NEAREST;
 let vel, div, curlF, pres, light, surf, parts, partFB, bloomA, bloomB;
+// ---- lettering on the far wall: "POOL BY LAMPWRECKED", one letter per tile ----
+const TITLE = 'POOL BY LAMPWRECKED';
+const text = { tex: null, cols: 1, rows: 1, key: '', attach(i) { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, this.tex); return i; } };
+function makeLettering(A) {
+  const across = Math.floor(A * 34) - 6;                 // wall tiles available across the top wall
+  const lines = TITLE.length <= across ? [TITLE] : ['POOL BY', 'LAMPWRECKED'];
+  const cols = Math.max(...lines.map(l => l.length)), key = lines.join('|');
+  if (key === text.key) return;
+  const cell = 64, ch2 = 112, c = document.createElement('canvas');
+  c.width = cols * cell; c.height = lines.length * ch2;
+  const x = c.getContext('2d');
+  x.fillStyle = '#000'; x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.font = `700 ${cell * 0.92}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
+  lines.forEach((l, r) => { const off = Math.floor((cols - l.length) / 2);
+    [...l].forEach((ch, i) => { if (ch === ' ') return; x.save(); x.translate((off + i + 0.5) * cell, (r + 0.53) * ch2); x.scale(0.82, 1.45); x.fillText(ch, 0, 0); x.restore(); }); });
+  if (!text.tex) text.tex = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, text.tex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  text.cols = cols; text.rows = lines.length; text.key = key;
+}
 function resize() {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const w = Math.floor(canvas.clientWidth * dpr), h = Math.floor(canvas.clientHeight * dpr);
@@ -483,6 +519,7 @@ function resize() {
   pool.aspect = (w - 2 * m) / (h - 2 * m);
   const A = pool.aspect;
   pool.ly = Math.max(2, Math.round(Math.sqrt(P.lampCount / A))); pool.lx = Math.max(2, Math.round(P.lampCount / pool.ly));
+  makeLettering(A);
   const [sw, sh] = size(P.simRes, A), [lw, lh] = size(P.lightRes, A), [ww, wh] = size(P.waveRes, A);
   vel = dfbo(sw, sh, LIN); div = fbo(sw, sh, gl.NEAREST); curlF = fbo(sw, sh, gl.NEAREST); pres = dfbo(sw, sh, gl.NEAREST);
   light = dfbo(lw, lh, LIN);
@@ -601,6 +638,7 @@ function render(t) {
   gl.uniform2f(u.res, canvas.width, canvas.height); gl.uniform2f(u.wtexel, surf.tx, surf.ty);
   gl.uniform1f(u.time, t); gl.uniform1f(u.bloomAmt, P.bloom); gl.uniform1f(u.slope, P.slope);
   gl.uniform1f(u.lamps, P.lamps); gl.uniform1f(u.poolAspect, pool.aspect);
+  gl.uniform1i(u.uText, text.attach(4)); gl.uniform3f(u.textInfo, text.cols, text.rows, 1);
   gl.uniform2f(u.lampGrid, pool.lx, pool.ly); gl.uniform1f(u.rim, pool.rim); gl.uniform1f(u.depthScale, P.depth); gl.uniform1f(u.usePart, parts ? 1 : 0);
   blit(null);
 }
