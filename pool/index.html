@@ -7,20 +7,22 @@
 <style>
   html,body{margin:0;height:100%;background:#000;overflow:hidden;cursor:none}
   canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
-  #info{position:fixed;left:3vh;bottom:2.2vh;color:#5fc8e0;opacity:.42;
-    font:400 1.6vh/1.4 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.08em;pointer-events:none}
-  #info b{font-weight:400;color:#9be6f5}
-  #info br{display:none} #info span{margin-left:1.6vh}
-  #qrbox{position:fixed;right:3vh;bottom:1.2vh;display:flex;flex-direction:row-reverse;align-items:center;gap:1.4vh;
-    opacity:.62;pointer-events:none}
-  #qr{width:7.4vh;height:7.4vh;background:#bfe4ee;border-radius:.6vh;padding:.5vh;box-sizing:content-box;display:none}
-  #qrcap{color:#5fc8e0;font:400 1.4vh/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.14em}
+  #info{position:fixed;left:calc(var(--rim) * 1.2);bottom:calc(var(--rim) * 1.2);color:#0c2a33;opacity:.75;
+    font:400 max(10px,1.4vh)/1.3 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.12em;pointer-events:none;
+    background:rgba(240,246,248,.9);padding:.5em .8em;border-radius:3px}
+  #info b{font-weight:600}
+  #info span:not(:empty){margin-left:1.2em}
+  #qrbox{position:fixed;right:calc(var(--rim) * 1.2);bottom:calc(var(--rim) * 1.2);display:flex;flex-direction:column;align-items:center;gap:.8vh;
+    background:rgba(240,246,248,.94);padding:1vh;border-radius:4px;pointer-events:none}
+  #qr{width:9vh;height:9vh;display:none;image-rendering:pixelated}
+  #qrcap{color:#0c2a33;font:400 max(9px,1.2vh)/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.12em;opacity:.8}
+  @media (max-width:640px){ #qrbox{display:none} }
   #err{position:fixed;inset:0;display:none;place-items:center;color:#5fc8e0;font:16px ui-monospace,monospace}
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="info"><b>pool</b><br><span id="count"></span></div>
+<div id="info"><b>pool</b><span id="count"></span></div>
 <div id="qrbox"><canvas id="qr"></canvas><div id="qrcap">touch the pool</div></div>
 <div id="err">this display can't run WebGL</div>
 <script>
@@ -47,13 +49,16 @@ const LOW = qs.get('q') === 'low';
 const SHOW_UI = qs.get('ui') !== '0';
 
 const P = {
-  simRes: LOW ? 96 : 128,         // currents
-  lightRes: LOW ? 320 : 512,      // plankton excitation field
-  waveRes: LOW ? 200 : 320,       // water surface
-  particles: LOW ? 200 : 384,     // plankton = particles² (384² ≈ 147k)
-  bloomRes: LOW ? 160 : 270,
+  // one version everywhere: full quality on phone and TV (?q=low only if you ask for it)
+  simRes: LOW ? 96 : 160,         // currents
+  lightRes: LOW ? 320 : 768,      // plankton excitation field
+  waveRes: LOW ? 240 : 448,       // water surface
+  particles: LOW ? 256 : 512,     // plankton = particles² (512² ≈ 262k)
+  bloomRes: LOW ? 180 : 360,
   pressureIters: LOW ? 16 : 24,
-  margin: 0.105,                  // deck width, in screen heights
+  margin: 0.035,                  // deck width, as a share of the short side
+  depth: 0.72,                    // how small the floor looks (smaller = deeper pool)
+  lampCount: 40,                  // ceiling lamps (arranged in a grid)
   velDissipation: 0.35,           // how fast currents calm
   curl: 18,                       // curly, organic eddies
   threshold: 7.0,                 // shear needed before plankton light up
@@ -65,7 +70,7 @@ const P = {
   waveDamp: 0.9975,               // how long ripples keep sloshing
   waveForce: 0.3,                 // how much gestures make waves
   slope: 4.0,                     // how strongly ripples bend the light
-  lamps: 1.0,                     // brightness of light reflections
+  lamps: 2.4,                     // brightness of the lamp reflections
   plankton: 1.5,                  // brightness of plankton
   bloom: 0.9,
   force: 1.0,                     // global gesture force
@@ -287,94 +292,132 @@ void main(){
   c += texture2D(uTexture,vUv+dir*3.231).rgb*0.07;  c += texture2D(uTexture,vUv-dir*3.231).rgb*0.07;
   gl_FragColor = vec4(c,1.);
 }`,
-  // the room: deck tiles, coping, underwater mosaic fading to black, lamp reflections, plankton
+  // the room: white glossy deck, coping, perspective walls down to a deep floor, lamp grid mirrored on the water
   display: `${HEAD}
 uniform sampler2D uWave, uParts, uBloom, uLight;
-uniform vec4 pool; uniform vec2 res, wtexel; uniform float time, bloomAmt, slope, lamps, poolAspect, usePart;
+uniform vec4 pool; uniform vec2 res, wtexel, lampGrid; uniform float time, bloomAmt, slope, lamps, poolAspect, usePart, rim, depthScale;
 float hash(vec2 p){ p = fract(p*vec2(123.34,456.21)); p += dot(p,p+45.32); return fract(p.x*p.y); }
-// tile pattern: x = inside-tile (1) vs grout (0), y = per-tile variation, z = bevel shade
-vec3 tiles(vec2 px, float size, float grout){
-  vec2 c = px/size; vec2 id = floor(c); vec2 f = fract(c);
+// x = tile (1) vs grout (0), y = per-tile variation, z = bevel, w = tile id hash 2
+vec4 tiles(vec2 c, float grout){
+  vec2 id = floor(c); vec2 f = fract(c);
   vec2 e = min(f, 1.0-f);
   float m = smoothstep(0.0, grout, min(e.x,e.y));
-  float bevel = (f.x - f.y)*0.18*smoothstep(grout*3.0, 0.0, min(e.x,e.y));
-  return vec3(m, hash(id), bevel);
+  float bevel = (f.x - f.y)*0.25*smoothstep(grout*3.0, 0.0, min(e.x,e.y));
+  return vec4(m, hash(id), bevel, hash(id+7.7));
 }
-// overhead lamps, in pool units (x 0..poolAspect, y 0..1). Water mirrors them.
-float lampsAt(vec2 c){
-  float A = poolAspect;
+// grid of round ceiling lamps over the pool (pool units: x 0..A, y 0..1). soft = glossiness blur
+float lampsAt(vec2 c, float soft){
+  vec2 cell = vec2(poolAspect, 1.0) / lampGrid;
+  vec2 g = clamp(floor(c/cell), vec2(0.0), lampGrid-1.0);
   float e = 0.0;
-  // long strip light
-  float sx = smoothstep(0.12*A, 0.15*A, c.x) * smoothstep(0.88*A, 0.85*A, c.x);
-  e += sx * smoothstep(0.009, 0.004, abs(c.y-0.66)) * 1.4;
-  // three round lamps
-  for (int i=0;i<3;i++){
-    vec2 lp = vec2((0.22 + 0.28*float(i))*A, 0.27);
+  for (int i=-1;i<=1;i++) for (int j=-1;j<=1;j++){
+    vec2 gg = g + vec2(float(i),float(j));
+    if (gg.x < 0.0 || gg.y < 0.0 || gg.x > lampGrid.x-1.0 || gg.y > lampGrid.y-1.0) continue;
+    vec2 lp = (gg + 0.5)*cell;
+    float r = 0.15*min(cell.x, cell.y);
     float d = length(c - lp);
-    e += smoothstep(0.03, 0.022, d) * 1.6;
-    e += exp(-d*d/0.012) * 0.05;               // soft halo so crests catch light
+    e += smoothstep(r*(1.0+soft*2.5), r*(0.82-soft*0.5), d) * (4.2 - soft*3.2);
+    e += exp(-d*d/(r*r*9.0)) * 0.12;            // halo: crests catch light everywhere
   }
-  e += exp(-pow(c.y-0.66,2.0)/0.01) * sx * 0.04;
   return e;
 }
 void main(){
   vec2 px = vUv*res;
   vec2 pmin = pool.xy*res, pmax = (pool.xy+pool.zw)*res;
   float dEdge = min(min(px.x-pmin.x, pmax.x-px.x), min(px.y-pmin.y, pmax.y-px.y)); // >0 water, <0 deck
-  float H = res.y;
+  float A = poolAspect;
+  vec2 p = (vUv - pool.xy)/pool.zw;                   // pool uv (can be outside 0..1 on the deck)
+  vec2 w = vec2(p.x*A, p.y);                          // pool units
   vec3 col = vec3(0.0);
   vec3 bloom = texture2D(uBloom, vUv).rgb;
   float glowLight = dot(bloom, vec3(0.3,0.5,0.2));
+  float tilePx = rim*0.58;
 
   if (dEdge < 0.0) {
-    // ---- deck ----
-    vec3 t = tiles(px - pmin, H*0.058, 0.035);
-    float lamp = 0.55 + 0.45*smoothstep(H*0.35, 0.0, -dEdge);
-    vec3 stone = vec3(0.058,0.062,0.066) * (0.8 + 0.4*t.y) * (1.0 + t.z);
-    col = mix(vec3(0.012), stone, t.x) * lamp;
-    // coping: a rounded stone lip around the water
-    float cw = H*0.026;
+    // ---- white glossy deck ----
+    vec4 t = tiles((px - pmin)/tilePx + 0.5, 0.035);
+    vec3 white = vec3(0.86,0.9,0.92) * (0.93 + 0.1*t.y) * (1.0 + t.z);
+    col = mix(vec3(0.62,0.66,0.68), white, t.x) * 1.15;
+    vec2 tilt = (vec2(t.w, t.y) - 0.5) * 0.02;        // each tile sits a hair off-flat
+    col += vec3(1.0) * lampsAt(w + tilt*4.0, 0.7) * 0.22 * t.x;
+    // coping: rounded white bullnose right at the water
+    float cw = rim*0.42;
     if (-dEdge < cw) {
-      float u = -dEdge/cw;                       // 0 at water, 1 at deck
-      vec3 cp = tiles(vec2(px.x+px.y, 0.0), H*0.09, 0.02);
-      float round = sin(u*3.14159);
-      vec3 cop = vec3(0.13,0.14,0.145) * (0.55 + 0.6*round) * (0.9+0.2*cp.y);
-      col = mix(col, cop, smoothstep(1.0, 0.85, u));
-      col *= mix(0.55, 1.0, smoothstep(0.0, 0.25, u)); // shadowed nose
+      float u = -dEdge/cw;                                 // 0 at water, 1 at deck
+      float round = sin(u*1.5708);
+      vec3 cop = vec3(0.92,0.95,0.96) * (0.55 + 0.5*round);
+      cop += smoothstep(0.55, 0.7, u) * smoothstep(0.85, 0.7, u) * 0.35; // highlight along the nose
+      col = mix(cop, col, smoothstep(0.92, 1.0, u));
     }
-    col += vec3(0.05,0.35,0.6) * glowLight * 0.5;     // plankton light spills onto the deck edge
+    col += vec3(0.05,0.4,0.7) * glowLight * 0.6;
   } else {
     // ---- water ----
-    vec2 p = (vUv - pool.xy)/pool.zw;
-    float hL = texture2D(uWave, p - vec2(wtexel.x,0.)).r, hR = texture2D(uWave, p + vec2(wtexel.x,0.)).r;
-    float hB = texture2D(uWave, p - vec2(0.,wtexel.y)).r, hT = texture2D(uWave, p + vec2(0.,wtexel.y)).r;
+    vec2 pc = clamp(p, wtexel, 1.0-wtexel);
+    float h0 = texture2D(uWave, pc).r;
+    float hL = texture2D(uWave, pc - vec2(wtexel.x,0.)).r, hR = texture2D(uWave, pc + vec2(wtexel.x,0.)).r;
+    float hB = texture2D(uWave, pc - vec2(0.,wtexel.y)).r, hT = texture2D(uWave, pc + vec2(0.,wtexel.y)).r;
     vec2 grad = vec2(hR-hL, hT-hB) * slope;
+    float lap = (hL+hR+hB+hT-4.0*h0) * slope;
     vec3 N = normalize(vec3(-grad, 1.0));
-    // underwater wall mosaic, bent by the surface, fading into the deep
-    float depth = exp(-dEdge/(H*0.055));
-    vec2 rp = px + grad*H*0.012;
-    vec3 t = tiles(rp - pmin, H*0.019, 0.07);
-    vec3 mosaic = mix(vec3(0.01,0.02,0.025), vec3(0.09,0.24,0.28)*(0.75+0.5*t.y), t.x);
-    float wallShadow = smoothstep(0.0, H*0.012, dEdge);  // dark band under the coping
-    col = mosaic * depth * (0.32 + glowLight*5.0) * mix(0.35, 1.0, wallShadow);
+
+    // looking down into the basin: walls in perspective, floor deep below
+    vec2 q = (vec2(p.x-0.5, p.y-0.5) + grad*0.006) * vec2(A, 1.0);  // refracted, centred, pool units
+    vec2 half_ = vec2(A, 1.0)*0.5;
+    vec2 kk = abs(q)/half_;
+    float k = max(kk.x, kk.y);
+    float s = depthScale;                        // how small the floor looks = how deep it is
+    float cam = 1.6, D = cam/s - cam;
+    vec3 tileCol; float z;
+    float tileSize = 1.0/34.0;
+    if (k <= s) {
+      // floor
+      vec2 fw = q/s;
+      z = D;
+      vec4 t = tiles(fw/tileSize, 0.07);
+      tileCol = mix(vec3(0.45,0.5,0.52), vec3(0.9,0.94,0.95)*(0.94+0.1*t.y), t.x);
+      // lane lines down the long axis
+      float across = (A >= 1.0) ? fw.y : fw.x;
+      float along  = (A >= 1.0) ? fw.x : fw.y;
+      float span = (A >= 1.0) ? 1.0 : A;
+      float lanes = 8.0;
+      float lc = fract(across/span*lanes + 0.5*lanes) - 0.5;
+      float len = ((A >= 1.0) ? A : 1.0)*0.5 - 0.09;
+      float line = smoothstep(0.026, 0.016, abs(lc)) * step(abs(along), len);
+      line = max(line, smoothstep(0.035, 0.022, abs(lc)) * step(abs(abs(along)-len), 0.012) * 0.0);
+      float tee = step(abs(abs(along)-len), 0.006) * smoothstep(0.09, 0.07, abs(lc));
+      tileCol = mix(tileCol, vec3(0.05,0.1,0.22), max(line, tee) * 0.7);
+      // caustics: ripples focus the lamplight on the floor
+      tileCol *= 1.0 + clamp(-lap*0.9, -0.5, 1.6);
+    } else {
+      // walls: which one we're looking at, and how far down
+      float f = k;
+      z = cam/f - cam;
+      vec2 wc = (kk.x >= kk.y) ? vec2(q.y/f, z) : vec2(q.x/f, z);
+      vec4 t = tiles(wc/tileSize, 0.07);
+      tileCol = mix(vec3(0.45,0.5,0.52), vec3(0.92,0.95,0.96)*(0.94+0.1*t.y), t.x);
+      tileCol *= (kk.x >= kk.y) ? 0.82 : 0.95;  // walls face different ways to the light
+      tileCol *= 1.0 + clamp(-lap*0.5, -0.4, 1.0);
+    }
+    // water absorbs red first: white turns aqua, then deep blue, then near-black
+    vec3 absorb = exp(-z * vec3(4.2, 1.55, 1.05) * 1.55);
+    vec3 under = tileCol * absorb * (0.9 + glowLight*4.0);
+    under *= smoothstep(0.0, rim*0.35, dEdge)*0.55 + 0.45;   // shadow line under the coping
+    col = under;
     // plankton
     if (usePart > 0.5) col += texture2D(uParts, vUv).rgb;
-    else { float l = texture2D(uLight,p).r; float h = hash(floor(px/2.0)); col += vec3(0.1,0.7,1.0)*l*step(0.96,h)*3.0; }
+    else { float l = texture2D(uLight,p).r; float hh = hash(floor(px/2.0)); col += vec3(0.1,0.7,1.0)*l*step(0.96,hh)*3.0; }
     col += bloom * bloomAmt;
-    // reflections of the lamps
+    // the lamp grid mirrored on the surface
     vec3 R = reflect(vec3(0.,0.,-1.), N);
-    vec2 w = vec2(p.x*poolAspect, p.y);
     vec2 c = w + R.xy/max(R.z,0.2) * 0.9;
-    float fres = 0.22 + 0.78*pow(1.0 - N.z, 3.0);
-    float spec = lampsAt(c) * fres * lamps;
-    col += vec3(0.85,0.93,1.0) * spec * smoothstep(0.0, H*0.004, dEdge);
+    float fres = 0.12 + 0.88*pow(1.0 - N.z, 3.0);
+    col += vec3(0.95,0.97,1.0) * lampsAt(c, 0.0) * fres * lamps;
   }
-  col = 1.0 - exp(-col*1.25);
+  col = 1.0 - exp(-col*1.3);
   col += (hash(gl_FragCoord.xy+time)-0.5)/255.0;
   gl_FragColor = vec4(col,1.);
 }`,
 };
-
 function compile(type, src) {
   const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
   if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s) + '\n' + src);
@@ -424,7 +467,7 @@ function dfbo(w, h, filter, kind) {
   return { w, h, tx: 1 / w, ty: 1 / h, get read() { return a; }, get write() { return b; }, swap() { const t = a; a = b; b = t; } };
 }
 // the pool is an inset rectangle; every simulation lives inside it
-const pool = { x: 0, y: 0, w: 1, h: 1, aspect: 1 };
+const pool = { x: 0, y: 0, w: 1, h: 1, aspect: 1, rim: 20, lx: 8, ly: 5 };
 function size(res, ar) { return ar > 1 ? [Math.round(res * ar), Math.round(res)] : [Math.round(res), Math.round(res / ar)]; }
 const LIN = ext.linear ? gl.LINEAR : gl.NEAREST;
 let vel, div, curlF, pres, light, surf, parts, partFB, bloomA, bloomB;
@@ -433,10 +476,12 @@ function resize() {
   const w = Math.floor(canvas.clientWidth * dpr), h = Math.floor(canvas.clientHeight * dpr);
   if (canvas.width === w && canvas.height === h && vel) return;
   canvas.width = w; canvas.height = h;
-  const m = Math.round(P.margin * h);
+  const m = Math.max(10, Math.round(P.margin * Math.min(w, h)));
+  pool.rim = m; document.documentElement.style.setProperty('--rim', (m / dpr) + 'px');
   pool.x = m / w; pool.y = m / h; pool.w = (w - 2 * m) / w; pool.h = (h - 2 * m) / h;
   pool.aspect = (w - 2 * m) / (h - 2 * m);
   const A = pool.aspect;
+  pool.ly = Math.max(2, Math.round(Math.sqrt(P.lampCount / A))); pool.lx = Math.max(2, Math.round(P.lampCount / pool.ly));
   const [sw, sh] = size(P.simRes, A), [lw, lh] = size(P.lightRes, A), [ww, wh] = size(P.waveRes, A);
   vel = dfbo(sw, sh, LIN); div = fbo(sw, sh, gl.NEAREST); curlF = fbo(sw, sh, gl.NEAREST); pres = dfbo(sw, sh, gl.NEAREST);
   light = dfbo(lw, lh, LIN);
@@ -517,7 +562,7 @@ function step(dt, time) {
   // surface ripples, a few sub-steps per frame
   u = use(prog.wave, [surf.tx, surf.ty]);
   gl.uniform1f(u.c2, P.waveSpeed); gl.uniform1f(u.damp, P.waveDamp);
-  const n = Math.max(1, Math.min(4, Math.round(dt * 180)));
+  const n = Math.max(1, Math.min(8, Math.round(dt * 180 * P.waveRes / 320)));
   for (let i = 0; i < n; i++) { gl.uniform1i(u.uWave, surf.read.attach(0)); blit(surf.write); surf.swap(); }
   // plankton drift
   if (parts) {
@@ -554,7 +599,8 @@ function render(t) {
   gl.uniform4f(u.pool, pool.x, pool.y, pool.w, pool.h);
   gl.uniform2f(u.res, canvas.width, canvas.height); gl.uniform2f(u.wtexel, surf.tx, surf.ty);
   gl.uniform1f(u.time, t); gl.uniform1f(u.bloomAmt, P.bloom); gl.uniform1f(u.slope, P.slope);
-  gl.uniform1f(u.lamps, P.lamps); gl.uniform1f(u.poolAspect, pool.aspect); gl.uniform1f(u.usePart, parts ? 1 : 0);
+  gl.uniform1f(u.lamps, P.lamps); gl.uniform1f(u.poolAspect, pool.aspect);
+  gl.uniform2f(u.lampGrid, pool.lx, pool.ly); gl.uniform1f(u.rim, pool.rim); gl.uniform1f(u.depthScale, P.depth); gl.uniform1f(u.usePart, parts ? 1 : 0);
   blit(null);
 }
 
@@ -741,7 +787,7 @@ function drawQR() {
     const q = qrcode(0, 'M'); q.addData(url); q.make();
     const n = q.getModuleCount(), cv = document.getElementById('qr'), px = 8;
     cv.width = cv.height = n * px; const c = cv.getContext('2d');
-    c.fillStyle = '#bfe4ee'; c.fillRect(0, 0, n * px, n * px); c.fillStyle = '#021018';
+    c.fillStyle = '#f0f6f8'; c.fillRect(0, 0, n * px, n * px); c.fillStyle = '#0c2a33';
     for (let r = 0; r < n; r++) for (let k = 0; k < n; k++) if (q.isDark(r, k)) c.fillRect(k * px, r * px, px, px);
     cv.style.display = 'block';
   };

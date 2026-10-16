@@ -3,7 +3,7 @@
 Two sites, one body of water.
 
 - **`/input/`** — the phone. A black-and-white lattice your hand disturbs. Every gesture is saved as numbers only (no text, no IDs) and released into the pool.
-- **`/pool/`** — the wall. A tiled pool of black water that replays every gesture ever made as currents and ripples. Ripples bounce off the walls so the water sloshes in a finite space; overhead lamps mirror on the surface so you see every wave. The water stays black except ~150,000 plankton particles that light up only where the water is disturbed, and water that's been stirred too much tires and dims for ~20 seconds before it recovers.
+- **`/pool/`** — the wall. A deep, white-tiled pool seen from above, with lane lines on the floor and a grid of ceiling lamps mirrored on the surface. It replays every gesture ever made as currents and ripples. Ripples bounce off the walls so the water sloshes in a finite space; the lamp reflections and floor caustics show every wave. ~260,000 plankton particles that light up only where the water is disturbed, and water that's been stirred too much tires and dims for ~20 seconds before it recovers.
 - **`worker.js`** — the archive. A Cloudflare Worker that keeps every gesture forever.
 
 It works right away in **demo mode** (no setup): the wall plays invented gestures, and if you open `/input/` in another tab of the *same browser*, your gestures appear on the wall.
@@ -46,7 +46,7 @@ The QR code on the wall automatically points to the `/input/` page on whatever d
 ## On the 80" Samsung
 - Open the wall page, press **f** (or double-click) for full screen.
 - The TV's own browser may struggle with the fluid. If it stutters, run it from a laptop or mini PC over HDMI. Test this early.
-- Add `?q=low` to the address for a lighter version.
+- Phone and TV run the same full-quality version. Add `?q=low` only if a screen can't keep up.
 - Add `?ui=0` to hide the QR code and counter.
 
 ## Testing tricks
@@ -73,7 +73,7 @@ Live gestures land larger and brighter than archived ones so visitors can find t
 Near the top of `pool/index.html`, the `P` block has plain settings:
 - **Plankton:** `threshold` (how hard you must stir before they light), `gain`, `plankton` (brightness), `lightDecay` (afterglow), `recover` / `deplete` (how fast water tires and recovers), `particles` (count = this squared)
 - **Water:** `curl` (how curly the currents are), `waveForce` (how big the ripples are), `waveDamp` (how long they keep sloshing, closer to 1 = longer), `waveSpeed`, `slope` (how much ripples bend the reflections)
-- **Room:** `margin` (deck width), `lamps` (reflection brightness), `bloom`
+- **Room:** `margin` (deck width), `depth` (smaller = deeper pool), `lampCount` (ceiling lamps, laid out in a grid), `lamps` (reflection brightness), `bloom`
 
 ## Backups
 `https://<your-worker>/export?after=0` returns the first 500 gestures; change `after` to the last `id` you got to page through the rest.
