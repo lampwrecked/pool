@@ -73,6 +73,7 @@ Live gestures land larger and brighter than archived ones so visitors can find t
 Near the top of `pool/index.html`, the `P` block has plain settings:
 - **Plankton:** `threshold` (how hard you must stir before they light), `gain`, `plankton` (brightness), `lightDecay` (afterglow), `recover` / `deplete` (how fast water tires and recovers), `particles` (count = this squared)
 - **Water:** `curl` (how curly the currents are), `waveForce` (how big the ripples are), `waveDamp` (how long they keep sloshing, closer to 1 = longer), `waveSpeed`, `slope` (how much ripples bend the reflections)
+- **Crowd:** `maxAtOnce` (how many gestures play at the same time, default 10)
 - **Room:** `margin` (deck width), `depth` (smaller = deeper pool), `lampCount` (ceiling lamps, laid out in a grid), `lamps` (reflection brightness), `bloom`
 
 ## Backups
