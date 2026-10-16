@@ -35,7 +35,9 @@ No slash at the end.
 ### 5. Publish
 Repo `pool` → Settings → Pages → Deploy from branch `main`, folder `/ (root)`. Links:
 - wall: `https://lampwrecked.github.io/pool/pool/`
-- phone: `https://lampwrecked.github.io/pool/input/` Optional: custom domain `pool.lampwrecked.art` (CNAME in Spaceship → `lampwrecked.github.io`).
+- phone: `https://lampwrecked.github.io/pool/input/`
+
+Optional: custom domain `pool.lampwrecked.art` (CNAME in Spaceship → `lampwrecked.github.io`).
 
 The QR code on the wall automatically points to the `/input/` page on whatever domain the wall is on.
 
