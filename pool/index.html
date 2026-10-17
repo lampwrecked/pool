@@ -7,6 +7,7 @@
 <style>
   html,body{margin:0;height:100%;background:#000;overflow:hidden;cursor:none}
   canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
+  #info[hidden]{display:none}
   #info{position:fixed;left:calc(var(--rim) * 1.2);bottom:calc(var(--rim) * 1.2);color:#0c2a33;opacity:.75;
     font:400 max(10px,1.4vh)/1.3 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.12em;pointer-events:none;
     background:rgba(240,246,248,.9);padding:.5em .8em;border-radius:3px}
@@ -22,29 +23,29 @@
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="info"><b>pool</b><span id="count"></span></div>
+<div id="info" hidden><span id="count"></span></div>
 <div id="qrbox"><canvas id="qr"></canvas><div id="qrcap">touch the pool</div></div>
 <div id="err">this display can't run WebGL</div>
+<script src="../config.js"></script>
+<script src="../lib.js"></script>
 <script>
 /* ============================================================
    POOL — the pool.  Lampwrecked.
-   A tiled basin of black water. Every gesture ever made on
-   /input/ is replayed as currents and ripples. Plankton light
+   100 editions, ten seconds of touch each, stored on Ethereum
+   and replayed in order, one second apart (never more than ten
+   in the water at once), as currents and ripples. Plankton light
    up only where the water is sheared, and tire where it has been
    stirred too much. Overhead lamps mirror on the surface so you
    can see every wave slosh off the walls.
    ============================================================ */
 
 // ---- SETTINGS -------------------------------------------------
-// Paste your Cloudflare Worker address here (no slash at the end).
-// Leave empty to run in demo mode (invented gestures + same-browser live test).
-const API = '';
+// The contract address lives in /config.js (shared with /input/).
 // Where the QR code sends people. Empty = this site's /input/ page.
 const TOUCH_URL = '';
 // ---------------------------------------------------------------
 
 const qs = new URLSearchParams(location.search);
-const api = (qs.get('api') || API).replace(/\/$/, '');
 const LOW = qs.get('q') === 'low';
 const SHOW_UI = qs.get('ui') !== '0';
 
@@ -74,7 +75,6 @@ const P = {
   plankton: 1.5,                  // brightness of plankton
   bloom: 0.9,
   force: 1.0,                     // global gesture force
-  maxAtOnce: 10,                  // gestures playing in the pool at the same time
 };
 
 // ================= WebGL setup =================
@@ -649,22 +649,24 @@ function render(t) {
 const players = [];
 const rand = (a, b) => a + Math.random() * (b - a);
 
-function play(g, live) {
-  if (!g || !Array.isArray(g.f) || !g.f.length) return;
+// where a phone screen lands in the pool. A seed makes it the same every time (each edition keeps its spot).
+function region(a, seed, live) {
+  const r = seed == null ? Math.random : mulberry(seed);
   const A = aspect();
-  const ga = Math.max(0.2, Math.min(3, (g.a || 500) / 1000));      // phone w/h
-  const s = live ? rand(0.75, 0.95) : rand(0.45, 0.95);             // region height in screen heights
-  const w = Math.min(0.98, s * ga / A);                              // region width in uv
-  const h = s;
-  const ox = rand(0.01, 0.99 - w), oy = rand(0.01, Math.max(0.011, 0.99 - h));
+  const ga = Math.max(0.2, Math.min(3, a || 0.5));                 // phone w/h
+  const s = live ? 0.75 + r() * 0.2 : 0.5 + r() * 0.45;          // height in pool heights
+  const w = Math.min(0.98, s * ga / A), h = s;
+  return { ox: 0.01 + r() * Math.max(0, 0.98 - w), oy: 0.01 + r() * Math.max(0, 0.98 - h), w, h };
+}
+function mulberry(a) { a = (a * 2654435761) >>> 0; return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+// g: { t:type, a:aspect*1000, f:[[ms,x,y,...]] }   opt: { live, delay(ms), reg, gain, tag }
+function play(g, live, opt = {}) {
+  if (!g || !Array.isArray(g.f) || !g.f.length) return;
+  const reg = opt.reg || region((g.a || 500) / 1000, null, live);
   let dur = 0; for (const f of g.f) if (f.length >= 3) dur = Math.max(dur, f[f.length - 3]);
-  // never more than maxAtOnce: a live visitor bumps the oldest archived gesture
-  if (players.length >= P.maxAtOnce) {
-    if (!live) return;
-    const k = players.findIndex(p => !p.live); if (k < 0) return; players.splice(k, 1);
-  }
-  players.push({ g, live, ox, oy, w, h, t0: simNow, dur: Math.min(dur, 15000), last: -1,
-    gain: live ? 1.45 : rand(0.7, 1.0), ended: false });
+  players.push({ g, live, ...reg, t0: simNow + (opt.delay || 0), dur: Math.min(dur, 15000), last: -1,
+    gain: opt.gain || (live ? 1.45 : rand(0.85, 1.05)), ended: false, tag: opt.tag });
 }
 function mapPt(pl, x, y) { return [pl.ox + (x / 1000) * pl.w, 1 - (pl.oy + (y / 1000) * pl.h)]; }
 
@@ -686,6 +688,7 @@ function updatePlayers(now) {
   for (let k = players.length - 1; k >= 0; k--) {
     const pl = players[k], g = pl.g;
     const t = now - pl.t0, prev = pl.last;
+    if (t < 0) continue;                       // scheduled, not started yet
     const G = pl.gain;
     // event at start
     if (prev < 0) {
@@ -757,28 +760,72 @@ function updatePlayers(now) {
   }
 }
 
-// ================= archive + live =================
-let liveCursor = 0, total = 0, archive = [], demo = !api;
+// ================= the 100 editions =================
+// Each edition is a 10-second session (many strokes). Edition k starts k-1 seconds into the cycle,
+// so at most ten are ever in the water. The cycle is tied to the real clock: every screen and every
+// token page shows the same moment.
+const CFG = window.POOL_CONFIG || {}, L = window.POOLLIB;
+const chainMode = !!(CFG.contract && L);
+const focus = parseInt(qs.get('token')) || 0;          // ?token=n  → this edition glows brighter
+let editions = [];                                        // [{ id, a, strokes:[{t,start,f}] }]
 const countEl = document.getElementById('count');
-function setCount(n) { total = n; countEl.textContent = n ? n.toLocaleString() + ' movements' : ''; }
-async function getJSON(path) { const r = await fetch(api + path, { cache: 'no-store' }); if (!r.ok) throw new Error(r.status); return r.json(); }
-async function refillArchive() {
-  if (demo) return;
-  try { const d = await getJSON('/random?n=60'); archive = archive.concat(d.items || []); setCount(d.max || total); } catch (e) { }
-}
-async function pollLive() {
-  if (demo) return;
-  try {
-    const d = await getJSON('/since?id=' + liveCursor);
-    if (liveCursor === 0) { liveCursor = d.max || 0; setCount(d.max || 0); return; } // start live from now
-    for (const it of d.items || []) { liveCursor = Math.max(liveCursor, it.id); play(it.g, true); }
-    if (d.max) setCount(d.max);
-  } catch (e) { }
-}
-// same-browser live link (works in demo mode: open /touch/ in another tab)
-try { new BroadcastChannel('pool').onmessage = (e) => { if (demo) { play(e.data, true); setCount(total + 1); } }; } catch (e) { }
+function setCount() { countEl.textContent = (focus ? '#' + focus + '  ·  ' : '') + editions.length + ' / 100'; }
 
-// invented gestures for demo mode, so the sea is never empty before an archive exists
+async function loadEditions() {
+  try {
+    const n = await L.totalSupply();
+    for (let from = editions.length + 1; from <= n; from += 25) {
+      const list = await L.readGestures(from, 25);
+      list.forEach((b, i) => { const d = L.decode(b); if (d) editions[from + i - 1] = { id: from + i, ...d }; });
+    }
+    editions = editions.filter(Boolean);
+    setCount();
+  } catch (e) { console.warn('pool: could not read the chain', e); }
+}
+
+// demo: invented 10-second sessions so the pool can be seen before anything is minted
+function synthSession(id) {
+  const strokes = []; let t = 0;
+  const r = mulberry(id * 77 + 5);
+  while (t < 9000) {
+    const g = synth(); const d = g.f.reduce((m, f) => Math.max(m, f[f.length - 3]), 0);
+    strokes.push({ t: g.t, start: t, f: g.f }); t += d + 150 + r() * 1100;
+  }
+  return { id, a: 0.462, strokes };
+}
+
+const cycleLen = () => Math.max(editions.length, 10) * 1000;
+let lastSlot = null;
+const wallBase = Date.now() - performance.now();
+function scheduleEditions(now) {
+  if (!editions.length) return;
+  const wall = wallBase + now;                           // same moment on every screen
+  const slot = Math.floor(wall / 1000);
+  if (lastSlot === null) {                               // joining mid-cycle: start the ones already running
+    for (let back = 9; back >= 0; back--) startEdition(slot - back, (slot - back) * 1000 - wall);
+  } else for (let s = lastSlot + 1; s <= slot; s++) startEdition(s, s * 1000 - wall);
+  lastSlot = slot;
+}
+function startEdition(slot, offsetMs) {
+  const L2 = cycleLen() / 1000, k = ((slot % L2) + L2) % L2;
+  const ed = editions[k]; if (!ed) return;
+  const reg = region(ed.a, ed.id * 1013 + 7, false);
+  const mine = focus && ed.id === focus;
+  for (const st of ed.strokes) {
+    const delay = st.start + offsetMs;
+    if (delay < 0) continue;                              // already under way when we joined
+    play({ t: st.t, a: ed.a * 1000, f: st.f }, mine, { delay, reg, gain: mine ? 1.6 : (focus ? 0.75 : 1.0), tag: ed.id });
+  }
+}
+
+// same-browser preview from /input/ (demo + "preview before minting")
+try { new BroadcastChannel('pool').onmessage = (e) => {
+  const m = e.data;
+  if (m && m.session) { const d = L && L.decode(new Uint8Array(m.session)); if (d) for (const st of d.strokes) play({ t: st.t, a: d.a * 1000, f: st.f }, true, { delay: st.start }); }
+  else play(m, true);
+}; } catch (e) { }
+
+// invented gestures for demo mode
 function synth() {
   const types = [0, 0, 1, 2, 3, 3, 3, 4, 4, 5, 5, 6, 7, 8, 9];
   const t = types[(Math.random() * types.length) | 0];
@@ -800,18 +847,6 @@ function synth() {
   return { t, a: 462, f };
 }
 
-let nextSpawn = 0;
-function scheduleArchive(now) {
-  if (now < nextSpawn) return;
-  if (players.length < P.maxAtOnce) {
-    let g = null;
-    if (archive.length) g = archive.splice((Math.random() * archive.length) | 0, 1)[0].g;
-    else if (demo || total === 0) g = synth();
-    if (g) play(g, false);
-  }
-  nextSpawn = now + rand(80, 380);
-  if (!demo && archive.length < 15) refillArchive();
-}
 // a barely-there ambient drift: below the glow threshold, keeps the water alive between visitors
 let nextDrift = 0;
 function drift(now) {
@@ -840,8 +875,8 @@ function drawQR() {
 drawQR();
 
 // ================= loop =================
-if (!demo) { pollLive(); refillArchive(); setInterval(pollLive, 2000); setInterval(refillArchive, 90000); }
-else setCount(0);
+if (chainMode) { loadEditions(); setInterval(loadEditions, 30000); }
+else { editions = Array.from({ length: 100 }, (_, i) => synthSession(i + 1)); setCount(); countEl.textContent += '  ·  demo'; }
 addEventListener('keydown', e => {
   if (e.key === 'f') (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen()).catch(() => { });
   if (e.key === 'g') play(synth(), true); // test: drop a "live" gesture
@@ -855,13 +890,13 @@ function frame(now) {
   simNow = now;
   const dt = Math.min((now - lastT) / 1000, 1 / 30); lastT = now;
   resize();
-  scheduleArchive(now); drift(now); updatePlayers(now);
+  scheduleEditions(now); drift(now); updatePlayers(now);
   step(dt, now / 1000);
   if (!TEST) { render(now / 1000); requestAnimationFrame(frame); }
 }
 if (!TEST) requestAnimationFrame(frame);
 function tick(n) { for (let i = 0; i < n; i++) frame(simNow + 1000 / 60); render(simNow / 1000); }
-window.POOL = { play, synth, P, players, wave, ext, tick }; // handy for tuning in the console
+window.POOL = { play, synth, P, players, wave, ext, tick, editions: () => editions, synthSession }; // handy for tuning in the console
 </script>
 </body>
 </html>
