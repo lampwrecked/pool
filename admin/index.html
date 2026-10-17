@@ -45,7 +45,7 @@
     <h2>1 · Upload the artwork</h2>
     <p>Stores the pool and the mint page inside the contract. One transaction each. Re-upload any time until you freeze.</p>
     <button id="up-pool" disabled>upload pool</button><button id="up-mint" disabled>upload mint page</button>
-    <button id="preview" disabled>preview from chain</button>
+    <button id="preview" disabled>preview the pool from chain</button>
   </section>
 
   <section>
@@ -161,8 +161,8 @@ $('withdraw').onclick = () => tx('withdraw', '0x' + L.SEL.withdraw);
 $('freeze').onclick = () => { if (confirm('Freeze the pool and mint page forever? This cannot be undone.')) tx('freeze', '0x' + L.SEL.freezeFiles); };
 $('preview').onclick = async () => {
   try {
-    log('building the token page from the chain…');
-    const html = new TextDecoder().decode(L.decBytes(await call(L.encUint(L.SEL.poolHTML, 0))));
+    log('building the whole pool from the chain…');
+    const html = new TextDecoder().decode(L.decBytes(await call('0x' + L.SEL.poolHTML)));
     const w = window.open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
     if (!w) log('allow pop-ups to see the preview', 'warn');
   } catch (e) { log('preview failed: ' + e.message, 'warn'); }

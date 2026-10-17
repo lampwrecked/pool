@@ -7,8 +7,9 @@ pragma solidity ^0.8.24;
     stored on Ethereum, replayed in the pool one second apart, in order.
 
     Fully on-chain: the pool itself (compressed HTML) and every gesture
-    live in this contract. Each token's animation is assembled here:
-    the pool + all gestures, as one self-contained page.
+    live in this contract. Each token's animation is the pool with its
+    own gesture looping in it. poolHTML() / poolURI() is the whole work:
+    the pool rendered with every gesture, in order.
 
     Free to mint (collectors pay gas). One mint per wallet.
     A token's holder may rewrite its gesture for 0.01 ETH.
@@ -53,8 +54,7 @@ contract Pool is ERC721, ERC2981, Ownable {
     mapping(uint8 => address[]) private _files;     // file slot => chunks
 
     event Gesture(uint256 indexed tokenId, address indexed by, uint256 size, bool rewrite);
-    // ERC-4906: tell marketplaces to refresh. Every token's animation holds every gesture,
-    // so any change refreshes them all.
+    // ERC-4906: tell marketplaces to refresh (a rewrite changes that token; a new pool file changes all)
     event MetadataUpdate(uint256 _tokenId);
     event BatchMetadataUpdate(uint256 _fromTokenId, uint256 _toTokenId);
 
@@ -73,7 +73,6 @@ contract Pool is ERC721, ERC2981, Ownable {
         _data[id] = _store(g);
         _mint(msg.sender, id);
         emit Gesture(id, msg.sender, g.length, false);
-        if (id > 1) emit BatchMetadataUpdate(1, id - 1);
     }
 
     /// replace your token's gesture. It keeps its number and its place in the order.
@@ -84,7 +83,7 @@ contract Pool is ERC721, ERC2981, Ownable {
         _validate(g);
         _data[id] = _store(g);
         emit Gesture(id, msg.sender, g.length, true);
-        emit BatchMetadataUpdate(1, totalSupply);
+        emit MetadataUpdate(id);
     }
 
     function _validate(bytes calldata g) internal pure {
@@ -171,11 +170,11 @@ contract Pool is ERC721, ERC2981, Ownable {
 
     // ------------------------------------------------------------ the artwork
 
-    /// the pool as one self-contained HTML page. token 0 = the whole pool, no edition highlighted
-    function poolHTML(uint256 token) public view returns (bytes memory) {
+    /// THE POOL: the whole work, every gesture in order, as one self-contained HTML page
+    function poolHTML() public view returns (bytes memory) {
         uint256 n = totalSupply;
         bytes[] memory parts = new bytes[](n * 2 + 3);
-        parts[0] = abi.encodePacked('{"token":', token.toString(), ',"gestures":[');
+        parts[0] = '{"token":0,"gestures":[';
         for (uint256 i = 1; i <= n; ++i) {
             parts[i * 2 - 1] = bytes(Base64.encode(gesture(i)));
             parts[i * 2] = bytes(i < n ? '","' : "");
@@ -183,6 +182,19 @@ contract Pool is ERC721, ERC2981, Ownable {
         if (n > 0) { parts[1] = abi.encodePacked('"', parts[1]); parts[n * 2] = '"'; }
         parts[n * 2 + 1] = "]}";
         return _page(file(FILE_POOL), "/*POOL_DATA*/null", _cat(parts));
+    }
+
+    /// the whole pool as a link you can open (data URI)
+    function poolURI() external view returns (string memory) {
+        return string.concat("data:text/html;base64,", Base64.encode(poolHTML()));
+    }
+
+    /// ONE TOKEN: the pool with only this edition's gesture in the water, looping
+    function tokenHTML(uint256 id) public view returns (bytes memory) {
+        bytes memory data = abi.encodePacked(
+            '{"token":', id.toString(), ',"ids":[', id.toString(), '],"gestures":["', Base64.encode(gesture(id)), '"]}'
+        );
+        return _page(file(FILE_POOL), "/*POOL_DATA*/null", data);
     }
 
     /// the mint page, wired to this contract, straight from the chain
@@ -213,11 +225,11 @@ contract Pool is ERC721, ERC2981, Ownable {
         _requireOwned(id);
         bytes[] memory p = new bytes[](9);
         p[0] = abi.encodePacked('{"name":"pool #', id.toString());
-        p[1] = '","description":"Ten seconds of touch, released into a pool of light with ninety-nine others. Replayed in order, one second apart. Fully on-chain. pool by Lampwrecked.","image":"data:image/svg+xml;base64,';
+        p[1] = '","description":"Ten seconds of touch, released into a pool of light. One of 100; together they are replayed in order, one second apart, in the pool. Fully on-chain. pool by Lampwrecked.","image":"data:image/svg+xml;base64,';
         p[2] = bytes(Base64.encode(_svg(id)));
         if (_files[FILE_POOL].length > 0) {
             p[3] = '","animation_url":"data:text/html;base64,';
-            p[4] = bytes(Base64.encode(poolHTML(id)));
+            p[4] = bytes(Base64.encode(tokenHTML(id)));
         }
         p[5] = '","attributes":[{"trait_type":"Order","value":';
         p[6] = bytes(id.toString());

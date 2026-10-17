@@ -2,7 +2,7 @@
 
 100 editions. Each is ten seconds of one person's touch, stored on Ethereum and replayed in a pool of light: **#1, then #2 a second later, and so on to #100**, then around again. Never more than ten in the water at once. Free to mint (collectors pay their own gas), one per wallet. **A token's holder can rewrite its gesture for 0.01 ETH**; it keeps its number and its place in the order.
 
-**Fully on-chain.** The pool itself (compressed) and every gesture live in the contract. Each token's animation is assembled by the contract: the pool plus all gestures, as one self-contained page that unzips itself in the browser. No server, no hosting, no RPC needed to view it. The mint page is stored on-chain too (`mintHTML()`).
+**Fully on-chain.** The pool itself (compressed) and every gesture live in the contract. **Each token renders only its own gesture**, looping in the pool. **The whole work** — the pool rendered with all the gestures in order — is built on-chain too: `poolHTML()` / `poolURI()` on the contract (that's what "preview the pool" in /admin/ opens). No server, no hosting. The mint page is stored on-chain as well (`mintHTML()`).
 
 - **`/input/`** — the mint page. Record 10 seconds → it replays, locked → **re-record** or **mint**. Holders get **rewrite #n · 0.01 ETH**.
 - **`/pool/`** — the wall for the gallery (hosted copy of the same pool; reads gestures live from the chain). `/pool/?token=12` highlights #12.
@@ -34,7 +34,7 @@ In `config.js`: `contract` = the engine address, `collection` = the Transient co
 ### 4. Set up from /admin/ (in MetaMask's browser, connected as the owner of both)
 1. **allow engine to mint** and **use engine as renderer** (two transactions to your collection)
 2. **upload pool** and **upload mint page**
-3. **preview from chain**
+3. **preview the pool from chain**
 4. **open minting**
 
 ### 5. Test, then mainnet
@@ -43,7 +43,7 @@ Mint from `/input/` on your phone in MetaMask's browser, try a rewrite, check th
 > **Without Transient:** `contracts/Pool.sol` is a standalone version (its own NFT contract, same features). Deploy it with no constructor input and put its address in `contract`; skip step 0 in /admin/.
 
 ### Things to check on Sepolia
-- **Marketplace refresh.** The engine can't make the Transient collection announce "metadata changed", so after mints and rewrites, marketplaces may show an older picture until refreshed (OpenSea's *refresh metadata* button, or they re-read on their own schedule). The pool on the wall is always live.
+- **Marketplace refresh after a rewrite.** A token only changes when its own gesture is rewritten. The engine can't make the Transient collection announce that, so the marketplace may show the old gesture until refreshed (OpenSea's *refresh metadata* button). The pool is always live.
 - **Compile size.** If Remix warns the contract is too large, tell Claude.
 
 ### Costs (Oct 2026, ~0.07 gwei, ETH ≈ $2,450)

@@ -878,7 +878,7 @@ function drawQR() {
 drawQR();
 
 // ================= loop =================
-if (EMBED) { editions = (EMBED.gestures || []).map((b64, i) => { const d = L.decode(L.b64ToBytes(b64)); return d && { id: i + 1, ...d }; }).filter(Boolean); }
+if (EMBED) { editions = (EMBED.gestures || []).map((b64, i) => { const d = L.decode(L.b64ToBytes(b64)); return d && { id: (EMBED.ids && EMBED.ids[i]) || i + 1, ...d }; }).filter(Boolean); }
 else if (chainMode) { loadEditions(); setInterval(loadEditions, 30000); }
 else { editions = Array.from({ length: 100 }, (_, i) => synthSession(i + 1)); setCount(); countEl.textContent += '  ·  demo'; }
 addEventListener('keydown', e => {
