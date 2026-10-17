@@ -84,7 +84,13 @@
   const SEL = { mint: '7ba0e2e7', totalSupply: '18160ddd', gestures: 'b4eb4f38', hasMinted: '38e21cce', mintOpen: '24bbd049',
     rewrite: '203c1e11', tokensOf: '5a3f2672', writeFile: '2e038106', setMintOpen: 'f8004d31', setRewriteOpen: 'a01d9148',
     withdraw: '3ccfd60b', freezeFiles: '4d86d83d', owner: '8da5cb5b', filesFrozen: '420a47c1', rewriteOpen: '82f8e2a2',
-    poolHTML: '894308fb', mintHTML: '7634820a', file: 'aa70dd94' };
+    poolHTML: '894308fb', mintHTML: '7634820a', file: 'aa70dd94',
+    nft: '47ccca02', setRole: 'd4bf502a', hasRole: '91d14854', setRenderingContract: 'b7f1d072' };
+  const APPROVED_MINT_CONTRACT = 'f0178e81e3689af48153edf0e1b2d669fe2786ab9e21fdecf3e3771c70330af5';
+  const addrWord = a => a.replace(/^0x/, '').toLowerCase().padStart(64, '0');
+  const encGrantMinter = engine => '0x' + SEL.setRole + APPROVED_MINT_CONTRACT + word(96) + word(1) + word(1) + addrWord(engine);
+  const encHasMinter = engine => '0x' + SEL.hasRole + APPROVED_MINT_CONTRACT + addrWord(engine);
+  const encSetRenderer = engine => '0x' + SEL.setRenderingContract + addrWord(engine);
   const REWRITE_WEI = '0x2386f26fc10000';   // 0.01 ETH
   const TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
   function encMint(bytes) {
@@ -143,5 +149,5 @@
 
   const b64ToBytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
   window.POOLLIB = { encode, decode, hex, unhex, encMint, encRewrite, encWriteFile, encBool, encUint, encAddr, decUint, decBytes, decUintArray,
-    b64ToBytes, SEL, REWRITE_WEI, TRANSFER, rpc, call, totalSupply, readGestures, MAX_MS, MAX_BYTES };
+    b64ToBytes, encGrantMinter, encHasMinter, encSetRenderer, SEL, REWRITE_WEI, TRANSFER, rpc, call, totalSupply, readGestures, MAX_MS, MAX_BYTES };
 })();

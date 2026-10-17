@@ -300,7 +300,7 @@ const hosted = /^https?:$/.test(location.protocol);
 function poolLink(id) {
   if (hosted) return { href: '../pool/' + (id ? '?token=' + id : '') };
   const net = CFG.chainId === 11155111 ? 'https://testnets.opensea.io/assets/sepolia/' : 'https://opensea.io/assets/ethereum/';
-  return { href: net + CFG.contract + '/' + (id || 1) };
+  return { href: net + (CFG.collection || CFG.contract) + '/' + (id || 1) };
 }
 let wallet = null; // { eth, from }
 async function connect(say) {
@@ -354,7 +354,8 @@ async function doMint(say) {
   try {
     say('confirm in your wallet. it\'s free, you only pay network gas.');
     const rc = await send(say, LIB.encMint(session.bytes), null, 'releasing your gesture into the pool… (about 15 seconds)');
-    const log = (rc.logs || []).find(l => l.topics && l.topics[0] === LIB.TRANSFER && l.address.toLowerCase() === CFG.contract.toLowerCase());
+    const zero = '0x' + '0'.repeat(64), me = '0x' + wallet.from.replace(/^0x/, '').toLowerCase().padStart(64, '0');
+    const log = (rc.logs || []).find(l => l.topics && l.topics[0] === LIB.TRANSFER && l.topics[1] === zero && (l.topics[2] || '').toLowerCase() === me);
     const id = log ? LIB.decUint(log.topics[3]) : 0;
     show('done', `you are <b>#${id}</b> of 100. ${id === 1 ? 'you open every cycle of the pool.' : `you play right after #${id - 1}.`}`,
       [['see yourself in the pool', poolLink(id)]]);

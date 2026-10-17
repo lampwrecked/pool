@@ -36,6 +36,12 @@
   </section>
 
   <section>
+    <h2>0 · Link to your Transient collection</h2>
+    <p>Lets the engine mint into your collection and draw every token. Two transactions, sent to the collection.</p>
+    <button id="grant" disabled>allow engine to mint</button><button id="render" disabled>use engine as renderer</button>
+  </section>
+
+  <section>
     <h2>1 · Upload the artwork</h2>
     <p>Stores the pool and the mint page inside the contract. One transaction each. Re-upload any time until you freeze.</p>
     <button id="up-pool" disabled>upload pool</button><button id="up-mint" disabled>upload mint page</button>
@@ -70,7 +76,7 @@ const $ = id => document.getElementById(id);
 const log = (t, cls) => { const d = document.createElement('div'); d.textContent = t; if (cls) d.className = cls; $('log').prepend(d); };
 const chainHex = '0x' + (CFG.chainId || 1).toString(16);
 const netName = { 1: 'Ethereum mainnet', 11155111: 'Sepolia (test)' }[CFG.chainId || 1] || 'chain ' + CFG.chainId;
-let from = null;
+let from = null, collection = null;
 
 $('s-contract').textContent = CFG.contract ? CFG.contract + ' · ' + netName : 'not set: paste it into config.js first';
 
@@ -88,22 +94,25 @@ async function status() {
     const pool = L.decBytes(await call(L.encUint(L.SEL.file, 0))).length;
     const page = L.decBytes(await call(L.encUint(L.SEL.file, 1))).length;
     const bal = Number(BigInt(await eth().request({ method: 'eth_getBalance', params: [CFG.contract, 'latest'] }))) / 1e18;
+    collection = '0x' + (await call('0x' + L.SEL.nft)).slice(-40);
+    const minter = L.decUint(await eth().request({ method: 'eth_call', params: [{ to: collection, data: L.encHasMinter(CFG.contract) }, 'latest'] }));
     const isOwner = from && owner.toLowerCase() === from.toLowerCase();
-    rows.push(['owner', owner + (isOwner ? '  (you)' : from ? '  (not you!)' : '')], ['minted', supply + ' / 100'],
+    rows.push(['collection', collection + (CFG.collection && CFG.collection.toLowerCase() !== collection.toLowerCase() ? '  (≠ config.js!)' : '')],
+      ['engine can mint', minter ? 'yes' : 'not yet: step 0'], ['owner', owner + (isOwner ? '  (you)' : from ? '  (not you!)' : '')], ['minted', supply + ' / 100'],
       ['minting', mint ? 'open' : 'closed'], ['rewrites', rw ? 'open' : 'closed'],
       ['pool file', pool ? pool.toLocaleString() + ' bytes' : 'not uploaded'], ['mint page', page ? page.toLocaleString() + ' bytes' : 'not uploaded'],
       ['files', frozen ? 'FROZEN (permanent)' : 'editable'], ['balance', bal + ' ETH']);
     for (const id of ['up-pool', 'up-mint', 'freeze']) $(id).disabled = !isOwner || !!frozen;
-    for (const id of ['mint-open', 'mint-close', 'rw-open', 'rw-close', 'withdraw']) $(id).disabled = !isOwner;
+    for (const id of ['mint-open', 'mint-close', 'rw-open', 'rw-close', 'withdraw', 'grant', 'render']) $(id).disabled = !isOwner;
     $('preview').disabled = !pool;
   } catch (e) { log('could not read the contract: ' + e.message, 'warn'); }
   $('status').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
 }
 
-async function tx(label, data, value) {
+async function tx(label, data, value, to) {
   try {
     log(label + ': confirm in your wallet…');
-    const p = { from, to: CFG.contract, data }; if (value) p.value = value;
+    const p = { from, to: to || CFG.contract, data }; if (value) p.value = value;
     const hash = await eth().request({ method: 'eth_sendTransaction', params: [p] });
     log(label + ': sent, waiting… ' + hash);
     let rc = null;
@@ -135,6 +144,8 @@ $('connect').onclick = async () => {
     status();
   } catch (e) { log(e.message, 'warn'); }
 };
+$('grant').onclick = () => tx('allow engine to mint', L.encGrantMinter(CFG.contract), null, collection);
+$('render').onclick = () => tx('use engine as renderer', L.encSetRenderer(CFG.contract), null, collection);
 $('up-pool').onclick = () => upload(0, '../onchain/pool.html.gz', 'pool');
 $('up-mint').onclick = () => upload(1, '../onchain/mint.html.gz', 'mint page');
 $('mint-open').onclick = () => tx('open minting', L.encBool(L.SEL.setMintOpen, true));
@@ -146,7 +157,7 @@ $('freeze').onclick = () => { if (confirm('Freeze the pool and mint page forever
 $('preview').onclick = async () => {
   try {
     log('building the token page from the chain…');
-    const html = new TextDecoder().decode(L.decBytes(await call(L.encUint(L.SEL.poolHTML, 1))));
+    const html = new TextDecoder().decode(L.decBytes(await call(L.encUint(L.SEL.poolHTML, 0))));
     const w = window.open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
     if (!w) log('allow pop-ups to see the preview', 'warn');
   } catch (e) { log('preview failed: ' + e.message, 'warn'); }
