@@ -1,53 +1,63 @@
 # pool
 
-100 editions. Each is ten seconds of one person's touch, stored on Ethereum and replayed in a pool of light: **#1, then #2 a second later, and so on to #100**, then around again. Never more than ten in the water at once. Free to mint (collectors pay their own gas), one per wallet.
+100 editions. Each is ten seconds of one person's touch, stored on Ethereum and replayed in a pool of light: **#1, then #2 a second later, and so on to #100**, then around again. Never more than ten in the water at once. Free to mint (collectors pay their own gas), one per wallet. **A token's holder can rewrite its gesture for 0.01 ETH**; it keeps its number and its place in the order.
 
-- **`/input/`** — the phone. A black-and-white lattice your hand disturbs. Tap **record your 10 seconds**, touch, review (replay / again), then **mint**.
-- **`/pool/`** — the wall. A deep white-tiled pool seen from above, with lane lines, a grid of ceiling lamps mirrored on the surface, and "POOL BY LAMPWRECKED" on the far wall. Ripples slosh off the walls; ~260,000 plankton light up only where the water is disturbed. Every screen is synced to the clock, so they all show the same moment. `/pool/?token=12` shows the pool with #12 glowing brighter (this is each token's animation).
-- **`contracts/Pool.sol`** — the contract. Gestures are stored fully on-chain. Each token's image is an on-chain SVG trace of its gesture.
-- **`config.js`** — the one place you paste the contract address.
+**Fully on-chain.** The pool itself (compressed) and every gesture live in the contract. Each token's animation is assembled by the contract: the pool plus all gestures, as one self-contained page that unzips itself in the browser. No server, no hosting, no RPC needed to view it. The mint page is stored on-chain too (`mintHTML()`).
 
-Before a contract is set, everything runs in **demo mode**: the wall plays 100 invented editions, and the input page lets you record and preview but not mint.
+- **`/input/`** — the mint page. Record 10 seconds → it replays, locked → **re-record** or **mint**. Holders get **rewrite #n · 0.01 ETH**.
+- **`/pool/`** — the wall for the gallery (hosted copy of the same pool; reads gestures live from the chain). `/pool/?token=12` highlights #12.
+- **`/admin/`** — for you: upload the pool and mint page into the contract, open/close minting and rewrites, withdraw rewrite fees, freeze.
+- **`contracts/Pool.sol`** — the contract. **`config.js`** — where you paste its address. **`onchain/`** — the compressed files that go into the contract (built by `tools/build.py`).
+
+Before a contract is set, the site runs in **demo mode**.
 
 ---
 
 ## Deploying (all in the browser, works on iPad)
 
-**Test on Sepolia first.** It's the free practice network. Get free test ETH from a Sepolia faucet.
+**Do the whole thing on Sepolia (free test network) first.** Get test ETH from a Sepolia faucet.
 
-### 1. Compile and deploy in Remix
-1. Go to **remix.ethereum.org**. Create a file `Pool.sol` and paste in `contracts/Pool.sol`.
-2. **Solidity compiler** tab: version **0.8.24** or newer, turn **optimization on (200)**, click **Compile**. Remix fetches the OpenZeppelin imports automatically.
-3. **Deploy** tab: Environment **Injected Provider – MetaMask**, with MetaMask on **Sepolia** first. Pick `Pool` and click **Deploy**. Approve in MetaMask.
-4. Copy the deployed contract address.
+### 1. Deploy the contract in Remix
+1. **remix.ethereum.org** → new file `Pool.sol` → paste `contracts/Pool.sol`.
+2. **Solidity compiler**: version **0.8.24+**, **optimization on (200)** → **Compile**. Remix fetches OpenZeppelin automatically. *If it warns the contract is too large, tell me.*
+3. **Deploy** tab: Environment **Injected Provider – MetaMask** (MetaMask on Sepolia) → **Deploy** `Pool`.
+4. Copy the contract address.
 
 ### 2. Point the site at it
-In `config.js`, paste the address into `contract: ''`. For the Sepolia test, also set `chainId: 11155111`; for the real thing, `chainId: 1`.
+In `config.js`: paste the address into `contract`, and set `chainId: 11155111` for Sepolia (`1` for mainnet). Commit.
 
-### 3. Set up the contract (Remix → Deployed Contracts, expand Pool)
-- `setAnimationBase` → `https://lampwrecked.github.io/pool/pool/` (or your custom domain + `/pool/`)
-- `setRoyalty` (optional) → your wallet, `500` = 5%
-- `setMintOpen` → `true` when you're ready
+### 3. Set it up from /admin/
+Open `/admin/` in MetaMask's browser → **connect wallet** →
+1. **upload pool** (1 transaction) and **upload mint page** (1 transaction)
+2. **preview from chain** — opens the token page exactly as the contract builds it
+3. **open minting** (rewrites start open)
 
-### 4. Test it
-Open `/input/` inside MetaMask's browser on your phone, record, mint. Check `/pool/` picks it up (within 30 seconds) and the token looks right on OpenSea's testnet site.
+Optional, in Remix: `setRoyalty(yourWallet, 500)` = 5%.
+
+### 4. Test
+Mint from `/input/` on your phone (in MetaMask's browser), try a rewrite from the same wallet, check the token on testnets.opensea.io. Mint from a few wallets so you see the order.
 
 ### 5. Mainnet
-Repeat steps 1–3 with MetaMask on **Ethereum mainnet**, put the new address in `config.js` with `chainId: 1`. When the animation link is final, call `freezeMetadata` (permanent).
+Repeat 1–3 with MetaMask on Ethereum mainnet, `chainId: 1` in config.js. When everything is right: **freeze files forever** in /admin/.
 
 ### Costs (Oct 2026, ~0.07 gwei, ETH ≈ $2,450)
-- Deploying: roughly a dollar.
-- Each mint: a typical gesture is under 1 KB, about **$0.05** of gas; the heaviest possible (five fingers for ten seconds, ~3.8 KB) is about $0.20. Gas prices change; check before launch.
-
----
+- Deploy contract: ~$0.70 · upload pool + mint page (~31 KB): ~$1.25
+- Each mint: ~$0.05 typical, ~$0.20 for the heaviest gesture
+- Each rewrite: 0.01 ETH + the same gas
+- Gas changes; check before launch. At 2 gwei, multiply by ~27.
 
 ## In the gallery
 - **80" Samsung:** open `/pool/`, press **f** (or double-click) for full screen. If the TV's browser stutters, use a laptop or mini PC over HDMI. `?q=low` is a lighter fallback; `?ui=0` hides the QR code.
 - **QR code** on the wall points to `/input/`. Phones need a wallet to mint: the page offers **open in MetaMask / Coinbase Wallet** buttons, which reopen it inside the wallet's browser.
 
 ## What the contract enforces
-- 100 max · one per wallet · free · minting only while open.
+- 100 max · one mint per wallet · free · minting only while open.
+- Rewrites: only the token's current holder, exactly 0.01 ETH, while rewrites are open.
 - Gesture data must be well-formed: 10 seconds max, ≤ 40 movements, ≤ 5 fingers each, ≤ 6 KB.
+- Marketplaces are told to refresh all tokens after any mint or rewrite (ERC-4906), since every token shows every gesture.
+
+## After changing the pages
+The on-chain copy only changes when you re-upload from /admin/ (before freezing). After editing `pool/` or `input/`, the compressed files need rebuilding (`python3 tools/build.py`). Ask Claude to do it.
 
 ## Gestures and what they do in the water
 | Gesture | Water |

@@ -81,13 +81,26 @@
   const hex = u8 => Array.from(u8, x => x.toString(16).padStart(2, '0')).join('');
   const unhex = h => { h = h.replace(/^0x/, ''); const o = new Uint8Array(h.length / 2); for (let i = 0; i < o.length; i++) o[i] = parseInt(h.substr(i * 2, 2), 16); return o; };
   const word = n => BigInt(n).toString(16).padStart(64, '0');
-  const SEL = { mint: '7ba0e2e7', totalSupply: '18160ddd', gestures: 'b4eb4f38', hasMinted: '38e21cce', mintOpen: '24bbd049' };
+  const SEL = { mint: '7ba0e2e7', totalSupply: '18160ddd', gestures: 'b4eb4f38', hasMinted: '38e21cce', mintOpen: '24bbd049',
+    rewrite: '203c1e11', tokensOf: '5a3f2672', writeFile: '2e038106', setMintOpen: 'f8004d31', setRewriteOpen: 'a01d9148',
+    withdraw: '3ccfd60b', freezeFiles: '4d86d83d', owner: '8da5cb5b', filesFrozen: '420a47c1', rewriteOpen: '82f8e2a2',
+    poolHTML: '894308fb', mintHTML: '7634820a', file: 'aa70dd94' };
+  const REWRITE_WEI = '0x2386f26fc10000';   // 0.01 ETH
   const TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
   function encMint(bytes) {
     const h = hex(bytes), pad = h.padEnd(Math.ceil(h.length / 64) * 64, '0');
     return '0x' + SEL.mint + word(32) + word(bytes.length) + pad;
   }
   const encGestures = (from, count) => '0x' + SEL.gestures + word(from) + word(count);
+  const padBytes = u8 => { const h = hex(u8); return word(u8.length) + h.padEnd(Math.ceil(h.length / 64) * 64, '0'); };
+  const encRewrite = (id, bytes) => '0x' + SEL.rewrite + word(id) + word(64) + padBytes(bytes);
+  const encWriteFile = (slot, bytes, replace) => '0x' + SEL.writeFile + word(slot) + word(96) + word(replace ? 1 : 0) + padBytes(bytes);
+  const encBool = (sel, v) => '0x' + sel + word(v ? 1 : 0);
+  const encUint = (sel, v) => '0x' + sel + word(v);
+  function decBytes(h) { const d = unhex(h); if (d.length < 64) return new Uint8Array(0);
+    const W = i => Number(BigInt('0x' + hex(d.slice(i, i + 32)))); const off = W(0), len = W(off); return d.slice(off + 32, off + 32 + len); }
+  function decUintArray(h) { const d = unhex(h); if (d.length < 64) return [];
+    const W = i => Number(BigInt('0x' + hex(d.slice(i, i + 32)))); const off = W(0), n = W(off); return Array.from({ length: n }, (_, i) => W(off + 32 + i * 32)); }
   const encAddr = (sel, addr) => '0x' + sel + addr.replace(/^0x/, '').toLowerCase().padStart(64, '0');
   function decBytesArray(h) {
     const d = unhex(h); if (d.length < 64) return [];
@@ -104,7 +117,10 @@
 
   // ---------- read-only RPC with fallbacks ----------
   function cfg() { return window.POOL_CONFIG || {}; }
-  function rpcList() { const c = cfg(); return c.chainId === 11155111 ? (c.sepoliaRpc || []) : (c.rpc || []); }
+  const DEFAULT_RPC = { 1: ['https://ethereum-rpc.publicnode.com', 'https://eth.llamarpc.com', 'https://cloudflare-eth.com'],
+    11155111: ['https://ethereum-sepolia-rpc.publicnode.com', 'https://rpc.sepolia.org'] };
+  function rpcList() { const c = cfg(); const id = c.chainId || 1;
+    const own = id === 11155111 ? c.sepoliaRpc : c.rpc; return (own && own.length ? own : DEFAULT_RPC[id]) || []; }
   let good = 0;
   async function rpc(method, params) {
     const list = rpcList(); let err;
@@ -125,5 +141,7 @@
   async function totalSupply() { return decUint(await call('0x' + SEL.totalSupply)); }
   async function readGestures(from, count) { return decBytesArray(await call(encGestures(from, count))); }
 
-  window.POOLLIB = { encode, decode, hex, unhex, encMint, encAddr, decUint, SEL, TRANSFER, rpc, call, totalSupply, readGestures, MAX_MS, MAX_BYTES };
+  const b64ToBytes = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+  window.POOLLIB = { encode, decode, hex, unhex, encMint, encRewrite, encWriteFile, encBool, encUint, encAddr, decUint, decBytes, decUintArray,
+    b64ToBytes, SEL, REWRITE_WEI, TRANSFER, rpc, call, totalSupply, readGestures, MAX_MS, MAX_BYTES };
 })();

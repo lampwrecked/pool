@@ -50,6 +50,7 @@
 <div id="panel"><div id="msg"></div><div class="row" id="btns"></div><div id="count"></div></div>
 <script src="../config.js"></script>
 <script src="../lib.js"></script>
+<script>window.POOL_CONFIG = /*POOL_CONFIG*/null || window.POOL_CONFIG;</script>
 <script>
 /* ============================================================
    POOL — input.  Lampwrecked.
@@ -294,42 +295,84 @@ function walletLinks() {
           ['open in Coinbase Wallet', { href: 'https://go.cb-w.com/dapp?cb_url=' + encodeURIComponent(pageUrl) }]];
 }
 const chainHex = () => '0x' + (CFG.chainId || 1).toString(16);
+// where "see the pool" goes: the hosted pool, or the token's page when this runs from the chain
+const hosted = /^https?:$/.test(location.protocol);
+function poolLink(id) {
+  if (hosted) return { href: '../pool/' + (id ? '?token=' + id : '') };
+  const net = CFG.chainId === 11155111 ? 'https://testnets.opensea.io/assets/sepolia/' : 'https://opensea.io/assets/ethereum/';
+  return { href: net + CFG.contract + '/' + (id || 1) };
+}
+let wallet = null; // { eth, from }
+async function connect(say) {
+  const eth = window.ethereum;
+  say('connecting to your wallet…');
+  const [from] = await eth.request({ method: 'eth_requestAccounts' });
+  if ((await eth.request({ method: 'eth_chainId' })) !== chainHex()) {
+    say('switching network…');
+    await eth.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: chainHex() }] });
+  }
+  return (wallet = { eth, from });
+}
+const ec = data => wallet.eth.request({ method: 'eth_call', params: [{ to: CFG.contract, data }, 'latest'] });
+async function send(say, data, value, waiting) {
+  const tx = { from: wallet.from, to: CFG.contract, data }; if (value) tx.value = value;
+  const hash = await wallet.eth.request({ method: 'eth_sendTransaction', params: [tx] });
+  say(waiting);
+  let rc = null;
+  for (let i = 0; i < 150 && !rc; i++) { await new Promise(r => setTimeout(r, 2000)); rc = await wallet.eth.request({ method: 'eth_getTransactionReceipt', params: [hash] }); }
+  if (!rc) throw new Error('still waiting on the network. check your wallet for the transaction.');
+  if (rc.status !== '0x1') throw new Error('the transaction failed. nothing changed.');
+  return rc;
+}
+function oops(e, retry) {
+  const t = e && e.code === 4001 ? 'cancelled in your wallet.' : ((e && e.message) || String(e));
+  show('review', t, [['try again', retry, true], ['back', showReview]]);
+}
+
 async function mint() {
   if (!chainMode) { show('review', 'demo mode: no contract is set yet, so this can\'t be minted. it played in the pool if one is open in this browser.', [['re-record', arm]]); return; }
-  const eth = window.ethereum;
-  if (!eth) { show('review', 'minting needs a wallet. open this page inside your wallet app, then record again there.', [...walletLinks(), ['back', showReview]]); return; }
+  if (!window.ethereum) { show('review', 'minting needs a wallet. open this page inside your wallet app, then record again there.', [...walletLinks(), ['back', showReview]]); return; }
   const say = t => show('mint', t, []);
   try {
-    say('connecting to your wallet…');
-    const [from] = await eth.request({ method: 'eth_requestAccounts' });
-    if ((await eth.request({ method: 'eth_chainId' })) !== chainHex()) {
-      say('switching network…');
-      await eth.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: chainHex() }] });
-    }
-    const ec = data => eth.request({ method: 'eth_call', params: [{ to: CFG.contract, data }, 'latest'] });
-    if (!LIB.decUint(await ec('0x' + LIB.SEL.mintOpen))) return show('review', 'minting isn\'t open yet.', [['back', showReview]]);
-    if (LIB.decUint(await ec('0x' + LIB.SEL.totalSupply)) >= 100) return show('done', 'the pool is full: all 100 have been minted.', [['see the pool', { href: '../pool/' }]]);
-    if (LIB.decUint(await ec(LIB.encAddr(LIB.SEL.hasMinted, from)))) return show('done', 'this wallet already has a gesture in the pool. one each.', [['see the pool', { href: '../pool/' }]]);
+    await connect(say);
+    const open = LIB.decUint(await ec('0x' + LIB.SEL.mintOpen));
+    const supply = LIB.decUint(await ec('0x' + LIB.SEL.totalSupply));
+    const minted = LIB.decUint(await ec(LIB.encAddr(LIB.SEL.hasMinted, wallet.from)));
+    const held = LIB.decUintArray(await ec(LIB.encAddr(LIB.SEL.tokensOf, wallet.from)));
+    const canMint = open && supply < 100 && !minted;
+    const rw = held.map(id => [`rewrite #${id} · 0.01 ETH`, () => rewrite(id)]);
+    if (canMint && !held.length) return doMint(say);
+    if (canMint) return show('review', `you hold ${held.map(i => '#' + i).join(', ')}. mint a new one, or rewrite one you hold?`,
+      [['mint new', () => doMint(say), true], ...rw, ['back', showReview]]);
+    if (held.length) return show('review', `${minted ? 'one mint per wallet, ' : ''}but you can rewrite ${held.length === 1 ? 'your gesture' : 'one of yours'}. it keeps its number and its place in the pool.`,
+      [...rw, ['back', showReview]]);
+    const why = !open ? 'minting isn\'t open yet.' : supply >= 100 ? 'the pool is full: all 100 have been minted.' : 'this wallet has already minted. one each.';
+    show('review', why, [['see the pool', poolLink(0)], ['back', showReview]]);
+  } catch (e) { oops(e, mint); }
+}
+async function doMint(say) {
+  try {
     say('confirm in your wallet. it\'s free, you only pay network gas.');
-    const hash = await eth.request({ method: 'eth_sendTransaction', params: [{ from, to: CFG.contract, data: LIB.encMint(session.bytes) }] });
-    say('releasing your gesture into the pool… (this takes about 15 seconds)');
-    let rc = null;
-    for (let i = 0; i < 150 && !rc; i++) { await new Promise(r => setTimeout(r, 2000)); rc = await eth.request({ method: 'eth_getTransactionReceipt', params: [hash] }); }
-    if (!rc) return show('review', 'still waiting on the network. check your wallet for the transaction.', [['back', showReview]]);
-    if (rc.status !== '0x1') return show('review', 'the transaction failed. nothing was minted.', [['back', showReview]]);
+    const rc = await send(say, LIB.encMint(session.bytes), null, 'releasing your gesture into the pool… (about 15 seconds)');
     const log = (rc.logs || []).find(l => l.topics && l.topics[0] === LIB.TRANSFER && l.address.toLowerCase() === CFG.contract.toLowerCase());
     const id = log ? LIB.decUint(log.topics[3]) : 0;
     show('done', `you are <b>#${id}</b> of 100. ${id === 1 ? 'you open every cycle of the pool.' : `you play right after #${id - 1}.`}`,
-      [['see yourself in the pool', { href: '../pool/?token=' + id }]]);
+      [['see yourself in the pool', poolLink(id)]]);
     refreshCount();
-  } catch (e) {
-    const t = e && e.code === 4001 ? 'cancelled in your wallet.' : 'something went wrong: ' + ((e && e.message) || e);
-    show('review', t, [['try again', mint, true], ['back', showReview]]);
-  }
+  } catch (e) { oops(e, mint); }
+}
+async function rewrite(id) {
+  const say = t => show('mint', t, []);
+  try {
+    if (!LIB.decUint(await ec('0x' + LIB.SEL.rewriteOpen))) return show('review', 'rewrites are closed right now.', [['back', showReview]]);
+    say(`confirm in your wallet: 0.01 ETH plus gas to rewrite #${id}.`);
+    await send(say, LIB.encRewrite(id, session.bytes), LIB.REWRITE_WEI, `rewriting #${id}… (about 15 seconds)`);
+    show('done', `<b>#${id}</b> is rewritten. the pool now plays your new ten seconds in its place.`, [['see yourself in the pool', poolLink(id)]]);
+  } catch (e) { oops(e, () => rewrite(id)); }
 }
 async function refreshCount() {
   if (!chainMode) { countEl.textContent = 'demo'; return; }
-  try { const n = await LIB.totalSupply(); countEl.textContent = n + ' / 100 minted'; if (n >= 100 && state === 'free') show('done', 'the pool is full: all 100 have been minted.', [['see the pool', { href: '../pool/' }]]); } catch (e) { }
+  try { const n = await LIB.totalSupply(); countEl.textContent = n + ' / 100 minted'; if (n >= 100 && state === 'free') show('free', 'all 100 have been minted. holders can still record and rewrite their gesture for 0.01 ETH.'); } catch (e) { }
 }
 
 const hint = document.getElementById('hint'); let hinted = false;

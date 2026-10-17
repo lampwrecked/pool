@@ -28,6 +28,7 @@
 <div id="err">this display can't run WebGL</div>
 <script src="../config.js"></script>
 <script src="../lib.js"></script>
+<script>window.POOL_EMBED = /*POOL_DATA*/null;</script>
 <script>
 /* ============================================================
    POOL — the pool.  Lampwrecked.
@@ -765,20 +766,22 @@ function updatePlayers(now) {
 // so at most ten are ever in the water. The cycle is tied to the real clock: every screen and every
 // token page shows the same moment.
 const CFG = window.POOL_CONFIG || {}, L = window.POOLLIB;
-const chainMode = !!(CFG.contract && L);
-const focus = parseInt(qs.get('token')) || 0;          // ?token=n  → this edition glows brighter
+const EMBED = window.POOL_EMBED;                         // set when this page is a token, served from the chain
+const chainMode = !EMBED && !!(CFG.contract && L);
+const focus = (EMBED && EMBED.token) || parseInt(qs.get('token')) || 0;   // this edition glows brighter
 let editions = [];                                        // [{ id, a, strokes:[{t,start,f}] }]
 const countEl = document.getElementById('count');
 function setCount() { countEl.textContent = (focus ? '#' + focus + '  ·  ' : '') + editions.length + ' / 100'; }
 
+// reads every edition each time, so rewritten gestures show up too
 async function loadEditions() {
   try {
-    const n = await L.totalSupply();
-    for (let from = editions.length + 1; from <= n; from += 25) {
+    const n = await L.totalSupply(), next = [];
+    for (let from = 1; from <= n; from += 25) {
       const list = await L.readGestures(from, 25);
-      list.forEach((b, i) => { const d = L.decode(b); if (d) editions[from + i - 1] = { id: from + i, ...d }; });
+      list.forEach((b, i) => { const d = L.decode(b); if (d) next[from + i - 1] = { id: from + i, ...d }; });
     }
-    editions = editions.filter(Boolean);
+    editions = next.filter(Boolean);
     setCount();
   } catch (e) { console.warn('pool: could not read the chain', e); }
 }
@@ -857,7 +860,7 @@ function drift(now) {
 
 // ================= QR =================
 function drawQR() {
-  if (!SHOW_UI) { document.getElementById('qrbox').style.display = 'none'; document.getElementById('info').style.display = 'none'; return; }
+  if (!SHOW_UI || window.POOL_EMBED) { document.getElementById('qrbox').style.display = 'none'; document.getElementById('info').style.display = 'none'; return; }
   const url = TOUCH_URL || new URL('../input/', location.href.split('?')[0]).href;
   const s = document.createElement('script');
   s.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js';
@@ -875,7 +878,8 @@ function drawQR() {
 drawQR();
 
 // ================= loop =================
-if (chainMode) { loadEditions(); setInterval(loadEditions, 30000); }
+if (EMBED) { editions = (EMBED.gestures || []).map((b64, i) => { const d = L.decode(L.b64ToBytes(b64)); return d && { id: i + 1, ...d }; }).filter(Boolean); }
+else if (chainMode) { loadEditions(); setInterval(loadEditions, 30000); }
 else { editions = Array.from({ length: 100 }, (_, i) => synthSession(i + 1)); setCount(); countEl.textContent += '  ·  demo'; }
 addEventListener('keydown', e => {
   if (e.key === 'f') (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen()).catch(() => { });

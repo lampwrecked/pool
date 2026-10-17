@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>pool · admin</title>
+<style>
+  :root{color-scheme:dark}
+  body{margin:0;background:#000;color:#fff;font:400 13px/1.55 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.04em}
+  main{max-width:620px;margin:0 auto;padding:28px 16px 60px}
+  h1{font-size:15px;font-weight:600;letter-spacing:.2em;margin:0 0 4px}
+  .sub{opacity:.55;margin-bottom:22px}
+  section{border-top:1px solid #333;padding:16px 0}
+  h2{font-size:12px;font-weight:600;letter-spacing:.18em;opacity:.7;margin:0 0 10px;text-transform:uppercase}
+  dl{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;margin:0}
+  dt{opacity:.55} dd{margin:0;word-break:break-all}
+  button{appearance:none;border:1px solid rgba(255,255,255,.55);background:transparent;color:#fff;font:inherit;
+    letter-spacing:.1em;padding:10px 14px;border-radius:2px;margin:0 8px 8px 0;cursor:pointer}
+  button.main{background:#fff;color:#000;border-color:#fff}
+  button.danger{border-color:#ff6b5e;color:#ff6b5e}
+  button:disabled{opacity:.3}
+  p{opacity:.7;margin:0 0 10px}
+  #log{white-space:pre-wrap;opacity:.8;font-size:12px;min-height:3em}
+  .ok{color:#7ee6a1} .warn{color:#ffb14a}
+</style>
+</head>
+<body>
+<main>
+  <h1>POOL · ADMIN</h1>
+  <div class="sub">for the contract owner. works in MetaMask's browser on iPad or phone.</div>
+
+  <section>
+    <h2>Contract</h2>
+    <dl id="status"><dt>contract</dt><dd id="s-contract">—</dd></dl>
+    <p style="margin-top:12px"><button class="main" id="connect">connect wallet</button></p>
+  </section>
+
+  <section>
+    <h2>1 · Upload the artwork</h2>
+    <p>Stores the pool and the mint page inside the contract. One transaction each. Re-upload any time until you freeze.</p>
+    <button id="up-pool" disabled>upload pool</button><button id="up-mint" disabled>upload mint page</button>
+    <button id="preview" disabled>preview from chain</button>
+  </section>
+
+  <section>
+    <h2>2 · Minting and rewrites</h2>
+    <button id="mint-open" disabled>open minting</button><button id="mint-close" disabled>close minting</button><br>
+    <button id="rw-open" disabled>open rewrites</button><button id="rw-close" disabled>close rewrites</button>
+  </section>
+
+  <section>
+    <h2>3 · Money</h2>
+    <p>Rewrite fees (0.01 ETH each) collect in the contract.</p>
+    <button id="withdraw" disabled>withdraw to owner</button>
+  </section>
+
+  <section>
+    <h2>4 · Make it permanent</h2>
+    <p>After this the pool and mint page can never change. Do it once everything looks right on mainnet.</p>
+    <button id="freeze" class="danger" disabled>freeze files forever</button>
+  </section>
+
+  <section><h2>Log</h2><div id="log"></div></section>
+</main>
+<script src="../config.js"></script>
+<script src="../lib.js"></script>
+<script>
+const CFG = window.POOL_CONFIG || {}, L = window.POOLLIB;
+const $ = id => document.getElementById(id);
+const log = (t, cls) => { const d = document.createElement('div'); d.textContent = t; if (cls) d.className = cls; $('log').prepend(d); };
+const chainHex = '0x' + (CFG.chainId || 1).toString(16);
+const netName = { 1: 'Ethereum mainnet', 11155111: 'Sepolia (test)' }[CFG.chainId || 1] || 'chain ' + CFG.chainId;
+let from = null;
+
+$('s-contract').textContent = CFG.contract ? CFG.contract + ' · ' + netName : 'not set: paste it into config.js first';
+
+const eth = () => window.ethereum;
+const call = data => eth().request({ method: 'eth_call', params: [{ to: CFG.contract, data }, 'latest'] });
+
+async function status() {
+  const rows = [['contract', CFG.contract + ' · ' + netName]];
+  try {
+    const owner = '0x' + (await call('0x' + L.SEL.owner)).slice(-40);
+    const supply = L.decUint(await call('0x' + L.SEL.totalSupply));
+    const mint = L.decUint(await call('0x' + L.SEL.mintOpen));
+    const rw = L.decUint(await call('0x' + L.SEL.rewriteOpen));
+    const frozen = L.decUint(await call('0x' + L.SEL.filesFrozen));
+    const pool = L.decBytes(await call(L.encUint(L.SEL.file, 0))).length;
+    const page = L.decBytes(await call(L.encUint(L.SEL.file, 1))).length;
+    const bal = Number(BigInt(await eth().request({ method: 'eth_getBalance', params: [CFG.contract, 'latest'] }))) / 1e18;
+    const isOwner = from && owner.toLowerCase() === from.toLowerCase();
+    rows.push(['owner', owner + (isOwner ? '  (you)' : from ? '  (not you!)' : '')], ['minted', supply + ' / 100'],
+      ['minting', mint ? 'open' : 'closed'], ['rewrites', rw ? 'open' : 'closed'],
+      ['pool file', pool ? pool.toLocaleString() + ' bytes' : 'not uploaded'], ['mint page', page ? page.toLocaleString() + ' bytes' : 'not uploaded'],
+      ['files', frozen ? 'FROZEN (permanent)' : 'editable'], ['balance', bal + ' ETH']);
+    for (const id of ['up-pool', 'up-mint', 'freeze']) $(id).disabled = !isOwner || !!frozen;
+    for (const id of ['mint-open', 'mint-close', 'rw-open', 'rw-close', 'withdraw']) $(id).disabled = !isOwner;
+    $('preview').disabled = !pool;
+  } catch (e) { log('could not read the contract: ' + e.message, 'warn'); }
+  $('status').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+}
+
+async function tx(label, data, value) {
+  try {
+    log(label + ': confirm in your wallet…');
+    const p = { from, to: CFG.contract, data }; if (value) p.value = value;
+    const hash = await eth().request({ method: 'eth_sendTransaction', params: [p] });
+    log(label + ': sent, waiting… ' + hash);
+    let rc = null;
+    for (let i = 0; i < 150 && !rc; i++) { await new Promise(r => setTimeout(r, 2000)); rc = await eth().request({ method: 'eth_getTransactionReceipt', params: [hash] }); }
+    if (!rc || rc.status !== '0x1') throw new Error('failed or still pending');
+    log(label + ': done ✓', 'ok');
+  } catch (e) { log(label + ': ' + (e.code === 4001 ? 'cancelled' : e.message), 'warn'); }
+  status();
+}
+
+async function upload(slot, path, label) {
+  const res = await fetch(path, { cache: 'no-store' });
+  if (!res.ok) return log('could not load ' + path, 'warn');
+  const data = new Uint8Array(await res.arrayBuffer());
+  const CH = 24000;
+  const chunks = []; for (let i = 0; i < data.length; i += CH) chunks.push(data.slice(i, i + CH));
+  log(`${label}: ${data.length.toLocaleString()} bytes in ${chunks.length} transaction${chunks.length > 1 ? 's' : ''}`);
+  for (let i = 0; i < chunks.length; i++) await tx(`${label} ${i + 1}/${chunks.length}`, L.encWriteFile(slot, chunks[i], i === 0));
+}
+
+$('connect').onclick = async () => {
+  if (!eth()) return log('no wallet found. open this page in MetaMask\'s browser.', 'warn');
+  if (!CFG.contract) return log('paste the contract address into config.js first.', 'warn');
+  try {
+    [from] = await eth().request({ method: 'eth_requestAccounts' });
+    if ((await eth().request({ method: 'eth_chainId' })) !== chainHex)
+      await eth().request({ method: 'wallet_switchEthereumChain', params: [{ chainId: chainHex }] });
+    $('connect').textContent = 'connected · ' + from.slice(0, 6) + '…' + from.slice(-4);
+    status();
+  } catch (e) { log(e.message, 'warn'); }
+};
+$('up-pool').onclick = () => upload(0, '../onchain/pool.html.gz', 'pool');
+$('up-mint').onclick = () => upload(1, '../onchain/mint.html.gz', 'mint page');
+$('mint-open').onclick = () => tx('open minting', L.encBool(L.SEL.setMintOpen, true));
+$('mint-close').onclick = () => tx('close minting', L.encBool(L.SEL.setMintOpen, false));
+$('rw-open').onclick = () => tx('open rewrites', L.encBool(L.SEL.setRewriteOpen, true));
+$('rw-close').onclick = () => tx('close rewrites', L.encBool(L.SEL.setRewriteOpen, false));
+$('withdraw').onclick = () => tx('withdraw', '0x' + L.SEL.withdraw);
+$('freeze').onclick = () => { if (confirm('Freeze the pool and mint page forever? This cannot be undone.')) tx('freeze', '0x' + L.SEL.freezeFiles); };
+$('preview').onclick = async () => {
+  try {
+    log('building the token page from the chain…');
+    const html = new TextDecoder().decode(L.decBytes(await call(L.encUint(L.SEL.poolHTML, 1))));
+    const w = window.open(URL.createObjectURL(new Blob([html], { type: 'text/html' })), '_blank');
+    if (!w) log('allow pop-ups to see the preview', 'warn');
+  } catch (e) { log('preview failed: ' + e.message, 'warn'); }
+};
+</script>
+</body>
+</html>
