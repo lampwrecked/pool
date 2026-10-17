@@ -94,16 +94,21 @@ async function status() {
     const pool = L.decBytes(await call(L.encUint(L.SEL.file, 0))).length;
     const page = L.decBytes(await call(L.encUint(L.SEL.file, 1))).length;
     const bal = Number(BigInt(await eth().request({ method: 'eth_getBalance', params: [CFG.contract, 'latest'] }))) / 1e18;
-    collection = '0x' + (await call('0x' + L.SEL.nft)).slice(-40);
-    const minter = L.decUint(await eth().request({ method: 'eth_call', params: [{ to: collection, data: L.encHasMinter(CFG.contract) }, 'latest'] }));
+    let minter = 0;
+    try {
+      collection = '0x' + (await call('0x' + L.SEL.nft)).slice(-40);
+      minter = L.decUint(await eth().request({ method: 'eth_call', params: [{ to: collection, data: L.encHasMinter(CFG.contract) }, 'latest'] }));
+    } catch (e) { collection = null; }   // standalone Pool.sol: no separate collection
     const isOwner = from && owner.toLowerCase() === from.toLowerCase();
-    rows.push(['collection', collection + (CFG.collection && CFG.collection.toLowerCase() !== collection.toLowerCase() ? '  (≠ config.js!)' : '')],
-      ['engine can mint', minter ? 'yes' : 'not yet: step 0'], ['owner', owner + (isOwner ? '  (you)' : from ? '  (not you!)' : '')], ['minted', supply + ' / 100'],
+    if (collection) rows.push(['collection', collection + (CFG.collection && CFG.collection.toLowerCase() !== collection.toLowerCase() ? '  (≠ config.js!)' : '')],
+      ['engine can mint', minter ? 'yes' : 'not yet: step 0']);
+    rows.push(['owner', owner + (isOwner ? '  (you)' : from ? '  (not you!)' : '')], ['minted', supply + ' / 100'],
       ['minting', mint ? 'open' : 'closed'], ['rewrites', rw ? 'open' : 'closed'],
       ['pool file', pool ? pool.toLocaleString() + ' bytes' : 'not uploaded'], ['mint page', page ? page.toLocaleString() + ' bytes' : 'not uploaded'],
       ['files', frozen ? 'FROZEN (permanent)' : 'editable'], ['balance', bal + ' ETH']);
     for (const id of ['up-pool', 'up-mint', 'freeze']) $(id).disabled = !isOwner || !!frozen;
-    for (const id of ['mint-open', 'mint-close', 'rw-open', 'rw-close', 'withdraw', 'grant', 'render']) $(id).disabled = !isOwner;
+    for (const id of ['mint-open', 'mint-close', 'rw-open', 'rw-close', 'withdraw']) $(id).disabled = !isOwner;
+    for (const id of ['grant', 'render']) $(id).disabled = !isOwner || !collection;
     $('preview').disabled = !pool;
   } catch (e) { log('could not read the contract: ' + e.message, 'warn'); }
   $('status').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
