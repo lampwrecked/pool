@@ -23,14 +23,16 @@
   #veil.on{opacity:1;pointer-events:auto}
   #veil span{position:absolute;left:0;right:0;top:16px;text-align:center;color:#fff;opacity:.55;
     font:400 11px/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.2em}
-  #rec{width:68px;height:68px;min-width:0;padding:0;border-radius:50%;border:2px solid rgba(255,255,255,.85);display:grid;place-items:center}
-  #rec::after{content:"";width:46px;height:46px;border-radius:50%;background:#ff3b30}
+  #rec{width:46px;height:46px;min-width:0;padding:0;border-radius:50%;border:2px solid rgba(255,255,255,.85);display:grid;place-items:center}
+  #rec::after{content:"";width:30px;height:30px;border-radius:50%;background:#ff3b30}
   #rec:active::after{transform:scale(.9)}
-  #reclabel{margin-top:8px;opacity:.6;font-size:11px;letter-spacing:.2em}
-  #panel{position:fixed;left:var(--rim);right:var(--rim);bottom:var(--rim);padding:18px 16px calc(18px + env(safe-area-inset-bottom));
-    background:linear-gradient(transparent,rgba(0,0,0,.92) 28%);color:#fff;
-    font:400 12px/1.5 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.08em;text-align:center;transition:opacity .4s}
+  #reclabel{margin-top:6px;opacity:.6;font-size:11px;letter-spacing:.2em}
+  #panel{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(320px,calc(100vw - 2 * var(--rim) - 32px));
+    box-sizing:border-box;padding:20px 18px 16px;background:rgba(12,12,12,.82);border:1px solid rgba(255,255,255,.14);border-radius:6px;
+    -webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);color:#fff;
+    font:400 12px/1.5 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.06em;text-align:center;transition:opacity .4s}
   #panel.off{opacity:0;pointer-events:none}
+  #panel.dim{opacity:.12;pointer-events:none}
   #msg{opacity:.75;margin:0 auto 12px;max-width:34em;min-height:1.5em}
   #msg b{font-weight:600;opacity:1}
   .row{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
@@ -65,7 +67,7 @@ const chainMode = !!(CFG.contract && LIB);
 
 const cv = document.getElementById('c'), ctx = cv.getContext('2d', { alpha: false });
 let W, H, DPR, N, hx, hy, px, py, vx, vy, gap;
-let RIM, IW, IH;            // deck width (same rule as the pool) and the water inside it
+let RIM, IW, IH;            // deck width (same rule as the pool) and the drawing area inside it
 const border = document.createElement('canvas'), bctx = border.getContext('2d');
 function build() {
   DPR = Math.min(devicePixelRatio || 1, 2);
@@ -84,24 +86,24 @@ function build() {
   let i = 0;
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) { hx[i] = px[i] = ox + c * gap; hy[i] = py[i] = oy + r * gap; i++; }
 }
-// white tiled deck with a rounded coping at the water's edge, like the pool
+// dark tiled deck with a rounded coping at the edge
 function drawBorder() {
   border.width = W * DPR; border.height = H * DPR;
   const c = bctx; c.setTransform(DPR, 0, 0, DPR, 0, 0); c.clearRect(0, 0, W, H);
   c.save(); c.beginPath(); c.rect(0, 0, W, H); c.rect(RIM, RIM, IW, IH); c.clip('evenodd');
-  c.fillStyle = '#a9b1b4'; c.fillRect(0, 0, W, H);                       // grout
+  c.fillStyle = '#050505'; c.fillRect(0, 0, W, H);                       // grout
   const ts = RIM * 0.58, g = Math.max(0.6, ts * 0.035);
   for (let y = RIM - Math.ceil(RIM / ts) * ts; y < H; y += ts)
     for (let x = RIM - Math.ceil(RIM / ts) * ts; x < W; x += ts) {
       const v = 0.93 + 0.1 * (Math.sin(x * 12.9898 + y * 78.233) * 43758.5453 % 1 + 1) % 1;
-      c.fillStyle = `rgb(${Math.round(219 * v)},${Math.round(229 * v)},${Math.round(234 * v)})`;
+      c.fillStyle = `rgb(${Math.round(38 * v)},${Math.round(40 * v)},${Math.round(42 * v)})`;
       c.fillRect(x + g, y + g, ts - 2 * g, ts - 2 * g);
     }
-  // coping: rounded bullnose along the water
+  // coping: rounded bullnose along the edge
   const cw = RIM * 0.42;
   for (let k = 0; k < cw; k++) {
-    const u = k / cw, l = Math.round(140 + 95 * Math.sin(u * Math.PI / 2) - (u < .2 ? 60 * (1 - u / .2) : 0));
-    c.strokeStyle = `rgb(${l},${l + 6},${l + 8})`; c.lineWidth = 1.2;
+    const u = k / cw, l = Math.round(22 + 40 * Math.sin(u * Math.PI / 2) - (u < .2 ? 14 * (1 - u / .2) : 0));
+    c.strokeStyle = `rgb(${l},${l + 2},${l + 3})`; c.lineWidth = 1.2;
     c.strokeRect(RIM - k - .5, RIM - k - .5, IW + 2 * k + 1, IH + 2 * k + 1);
   }
   c.restore();
@@ -132,6 +134,7 @@ cv.addEventListener('pointerdown', e => {
   const now = performance.now();
   if (state === 'review' || state === 'mint' || state === 'done') return;
   if (state === 'armed') startSession(now);
+  if (state === 'free') { panel.classList.add('dim'); clearTimeout(undim); }
   if (!gesture) gesture = { t0: session ? session.t0 : now, f: [], maxFingers: 0 };
   if (gesture.f.length >= 5) return;
   const fg = { idx: gesture.f.length, x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, downAt: now, lastRec: -1e9 };
@@ -150,7 +153,9 @@ cv.addEventListener('pointermove', e => {
   for (const ev of evs) { fg.x = ev.clientX; fg.y = ev.clientY; rec(fg, performance.now(), fg.x, fg.y, false); }
 }, { passive: false });
 
+let undim = 0;
 function up(e) {
+  if (state === 'free') { clearTimeout(undim); undim = setTimeout(() => { if (!fingers.size) panel.classList.remove('dim'); }, 900); }
   const fg = fingers.get(e.pointerId); if (!fg || !gesture) return;
   rec(fg, performance.now(), e.clientX, e.clientY, true);
   fingers.delete(e.pointerId);
@@ -265,7 +270,7 @@ function buttons(list) {
 }
 const veil = document.getElementById('veil');
 function show(st, text, list) {
-  state = st; panel.classList.remove('off');
+  state = st; panel.classList.remove('off', 'dim');
   veil.classList.toggle('on', st === 'review' || st === 'mint' || st === 'done');
   veil.firstElementChild.style.display = st === 'done' ? 'none' : '';
   if (!(st === 'review' || st === 'mint')) ghost = (st === 'done' ? ghost : null);
@@ -283,7 +288,7 @@ function arm() {
 }
 function showReview() {
   const kb = (session.bytes.length / 1024).toFixed(1);
-  show('review', `your ten seconds · ${session.strokes.length} movement${session.strokes.length === 1 ? '' : 's'} · ${kb} KB`, [
+  show('review', `your ten seconds<br><span style="opacity:.6">${session.strokes.length} movement${session.strokes.length === 1 ? '' : 's'} · ${kb}&nbsp;KB</span>`, [
     ['re-record', arm], ['mint', mint, true]]);
 }
 
@@ -377,9 +382,9 @@ async function refreshCount() {
 }
 
 const hint = document.getElementById('hint'); let hinted = false;
-setTimeout(() => { if (!hinted && state === 'free') hint.style.opacity = .4; }, 900);
+
 function hideHint() { hinted = true; hint.style.opacity = 0; }
-show('free', 'play with the water. press record, then you have ten seconds of touch to mint into <b>pool</b>, one of 100.');
+show('free', 'touch the grid. press record and you have ten seconds of touch to mint into <b>pool</b>, one of 100.');
 refreshCount();
 
 // ---------- the lattice ----------
