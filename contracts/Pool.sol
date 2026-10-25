@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 /*
     pool — Lampwrecked
     100 editions. Each edition is ten seconds of one person's touch,
-    stored on Ethereum, replayed in the pool one second apart, in order.
+    stored on Ethereum, replayed in the pool two seconds apart, in order.
 
     Fully on-chain: the pool itself (compressed HTML) and every gesture
     live in this contract. Each token's animation is the pool with its
@@ -225,7 +225,7 @@ contract Pool is ERC721, ERC2981, Ownable {
         _requireOwned(id);
         bytes[] memory p = new bytes[](9);
         p[0] = abi.encodePacked('{"name":"pool #', id.toString());
-        p[1] = '","description":"Ten seconds of touch, released into a pool of light. One of 100; together they are replayed in order, one second apart, in the pool. Fully on-chain. pool by Lampwrecked.","image":"data:image/svg+xml;base64,';
+        p[1] = '","description":"Ten seconds of touch, released into a pool of light. One of 100; together they are replayed in order, two seconds apart, in the pool. Fully on-chain. pool by Lampwrecked.","image":"data:image/svg+xml;base64,';
         p[2] = bytes(Base64.encode(_svg(id)));
         if (_files[FILE_POOL].length > 0) {
             p[3] = '","animation_url":"data:text/html;base64,';

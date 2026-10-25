@@ -33,8 +33,10 @@
 /* ============================================================
    POOL — the pool.  Lampwrecked.
    100 editions, ten seconds of touch each, stored on Ethereum
-   and replayed in order, one second apart (never more than ten
-   in the water at once), as currents and ripples. Plankton light
+   and replayed in order, two seconds apart (never more than five
+   in the water at once), as currents and ripples. A full pool
+   cycles every 200 seconds; with fewer editions they repeat in
+   order, at the same pace, so the pool is never sparse. Plankton light
    up only where the water is sheared, and tire where it has been
    stirred too much. Overhead lamps mirror on the surface so you
    can see every wave slosh off the walls.
@@ -762,9 +764,11 @@ function updatePlayers(now) {
 }
 
 // ================= the 100 editions =================
-// Each edition is a 10-second session (many strokes). Edition k starts k-1 seconds into the cycle,
-// so at most ten are ever in the water. The cycle is tied to the real clock: every screen and every
-// token page shows the same moment.
+// Each edition is a 10-second session (many strokes). A new one starts every 2 seconds, so at most
+// five are ever in the water. A full pool cycles every 200 seconds; with fewer editions they repeat
+// in order at the same pace, seamlessly (2 editions: #1 #2 #1 #2 …). A single token's
+// page plays its one gesture every 10 seconds instead. The cycle is tied to the real clock: every
+// screen and every token page shows the same moment.
 const CFG = window.POOL_CONFIG || {}, L = window.POOLLIB;
 const EMBED = window.POOL_EMBED;                         // set when this page is a token, served from the chain
 const chainMode = !EMBED && !!(CFG.contract && L);
@@ -797,21 +801,22 @@ function synthSession(id) {
   return { id, a: 0.462, strokes };
 }
 
-const cycleLen = () => Math.max(editions.length, 10) * 1000;
+const SLOT = 2000;                                       // a new edition every 2 s
+const SOLO = !!(EMBED && EMBED.ids && EMBED.ids.length === 1);   // one token's page: its gesture alone
 let lastSlot = null;
 const wallBase = Date.now() - performance.now();
 function scheduleEditions(now) {
   if (!editions.length) return;
   const wall = wallBase + now;                           // same moment on every screen
-  const slot = Math.floor(wall / 1000);
+  const slot = Math.floor(wall / SLOT);
   if (lastSlot === null) {                               // joining mid-cycle: start the ones already running
-    for (let back = 9; back >= 0; back--) startEdition(slot - back, (slot - back) * 1000 - wall);
-  } else for (let s = lastSlot + 1; s <= slot; s++) startEdition(s, s * 1000 - wall);
+    for (let back = 5; back >= 0; back--) startEdition(slot - back, (slot - back) * SLOT - wall);
+  } else for (let s = lastSlot + 1; s <= slot; s++) startEdition(s, s * SLOT - wall);
   lastSlot = slot;
 }
 function startEdition(slot, offsetMs) {
-  const L2 = cycleLen() / 1000, k = ((slot % L2) + L2) % L2;
-  const ed = editions[k]; if (!ed) return;
+  if (SOLO && ((slot % 5) + 5) % 5) return;             // one token: every 10 s, never overlapping itself
+  const n = editions.length, ed = editions[((slot % n) + n) % n]; if (!ed) return;
   const reg = region(ed.a, ed.id * 1013 + 7, false);
   const mine = focus && ed.id === focus;
   for (const st of ed.strokes) {
