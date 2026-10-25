@@ -341,6 +341,7 @@ async function mint() {
   try {
     await connect(say);
     const open = LIB.decUint(await ec('0x' + LIB.SEL.mintOpen));
+    let sealed = 0; try { sealed = LIB.decUint(await ec('0x' + LIB.SEL.poolToken)); } catch (e) { }
     const supply = LIB.decUint(await ec('0x' + LIB.SEL.totalSupply));
     const minted = LIB.decUint(await ec(LIB.encAddr(LIB.SEL.hasMinted, wallet.from)));
     const held = LIB.decUintArray(await ec(LIB.encAddr(LIB.SEL.tokensOf, wallet.from)));
@@ -351,7 +352,7 @@ async function mint() {
       [['mint new', () => doMint(say), true], ...rw, ['back', showReview]]);
     if (held.length) return show('review', `${minted ? 'one mint per wallet, ' : ''}but you can rewrite ${held.length === 1 ? 'your gesture' : 'one of yours'}. it keeps its number and its place in the pool.`,
       [...rw, ['back', showReview]]);
-    const why = !open ? 'minting isn\'t open yet.' : supply >= 100 ? 'the pool is full: all 100 have been minted.' : 'this wallet has already minted. one each.';
+    const why = sealed ? 'the pool is sealed: minting is closed for good.' : !open ? 'minting isn\'t open yet.' : supply >= 100 ? 'the pool is full: all 100 have been minted.' : 'this wallet has already minted. one each.';
     show('review', why, [['see the pool', poolLink(0)], ['back', showReview]]);
   } catch (e) { oops(e, mint); }
 }

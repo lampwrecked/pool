@@ -85,7 +85,7 @@
     rewrite: '203c1e11', tokensOf: '5a3f2672', writeFile: '2e038106', setMintOpen: 'f8004d31', setRewriteOpen: 'a01d9148',
     withdraw: '3ccfd60b', freezeFiles: '4d86d83d', owner: '8da5cb5b', filesFrozen: '420a47c1', rewriteOpen: '82f8e2a2',
     poolHTML: '89596cfc', tokenHTML: 'b79bebaf', poolURI: '1696953b', mintHTML: '7634820a', file: 'aa70dd94',
-    nft: '47ccca02', setRole: 'd4bf502a', hasRole: '91d14854', setRenderingContract: 'b7f1d072' };
+    nft: '47ccca02', poolToken: 'cbdf382c', sealPool: '96aac313', setRole: 'd4bf502a', hasRole: '91d14854', setRenderingContract: 'b7f1d072' };
   const APPROVED_MINT_CONTRACT = 'f0178e81e3689af48153edf0e1b2d669fe2786ab9e21fdecf3e3771c70330af5';
   const addrWord = a => a.replace(/^0x/, '').toLowerCase().padStart(64, '0');
   const encGrantMinter = engine => '0x' + SEL.setRole + APPROVED_MINT_CONTRACT + word(96) + word(1) + word(1) + addrWord(engine);

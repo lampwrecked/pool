@@ -24,7 +24,7 @@ Create a new **ERC-721 collection** (the standard creator contract) in Transient
 
 ### 2. Deploy the engine in Remix
 1. **remix.ethereum.org** → new file `PoolEngine.sol` → paste `contracts/PoolEngine.sol`.
-2. **Solidity compiler**: version **0.8.24+**, **optimization on (200)** → **Compile**.
+2. **Solidity compiler**: version **0.8.24**, **optimization on (200)**, and **via IR on** (Advanced configurations → *Use configuration file*, and in `compiler_config.json` set `"viaIR": true` under `settings`) → **Compile**. Without via IR it fails with *Stack too deep*.
 3. **Deploy** tab: Environment **Injected Provider – MetaMask** → contract `PoolEngine` → in the box next to Deploy paste your **collection address** → **Deploy**.
 4. Copy the engine's address.
 
@@ -38,13 +38,17 @@ In `config.js`: `contract` = the engine address, `collection` = the Transient co
 4. **open minting**
 
 ### 5. Test, then mainnet
-Mint from `/input/` on your phone in MetaMask's browser, try a rewrite, check the tokens on Transient and testnets.opensea.io. Then repeat 1–4 on mainnet with `chainId: 1`. When it's all right: **freeze files forever**.
+Mint from `/input/` on your phone in MetaMask's browser, try a rewrite, check the tokens on Transient and testnets.opensea.io. **Seal the pool** on Sepolia too, and check the pool token shows up and plays. Then repeat 1–4 on mainnet with `chainId: 1`. When it's all right: **freeze files forever**.
 
-> **Without Transient:** `contracts/Pool.sol` is a standalone version (its own NFT contract, same features). Deploy it with no constructor input and put its address in `contract`; skip step 0 in /admin/.
+### 6. Seal the pool (when minting is done)
+In /admin/ step 4. Closes minting for good and mints one more token, **pool**: the whole work, every gesture #1 to #n in order. It is always the token right after the last gesture (#101 if all 100 mint). It goes to your wallet unless you paste another address. It stays live: when a holder rewrites a gesture, the pool token shows it.
+
+> **Without Transient:** `contracts/Pool.sol` is a standalone version (its own NFT contract, same features except the pool token). Deploy it with no constructor input and put its address in `contract`; skip step 0 in /admin/.
 
 ### Things to check on Sepolia
 - **Marketplace refresh after a rewrite.** A token only changes when its own gesture is rewritten. The engine can't make the Transient collection announce that, so the marketplace may show the old gesture until refreshed (OpenSea's *refresh metadata* button). The pool is always live.
-- **Compile size.** If Remix warns the contract is too large, tell Claude.
+- **Compile size.** Compiled with via IR it's ~16 KB, under the 24 KB limit.
+- **The pool token on marketplaces.** It's the heaviest token: the whole pool, built on the spot. Check that Transient and testnets.opensea.io show it and play it.
 
 ### Costs (Oct 2026, ~0.07 gwei, ETH ≈ $2,450)
 - Transient collection: whatever Transient's studio charges in gas (small) · deploy engine: ~$0.70 · link (2 tx) + upload pool + mint page (~31 KB): ~$1.35
@@ -57,7 +61,8 @@ Mint from `/input/` on your phone in MetaMask's browser, try a rewrite, check th
 - **QR code** on the wall points to `/input/`. Phones need a wallet to mint: the page offers **open in MetaMask / Coinbase Wallet** buttons, which reopen it inside the wallet's browser.
 
 ## What the contract enforces
-- 100 max · one mint per wallet · free · minting only while open.
+- 100 max · one mint per wallet · free · minting only while open, and never after the pool is sealed.
+- Sealing: owner only, once, needs at least one gesture. Mints the pool token; it can't be rewritten.
 - Rewrites: only the token's current holder, exactly 0.01 ETH, while rewrites are open.
 - Gesture data must be well-formed: 10 seconds max, ≤ 40 movements, ≤ 5 fingers each, ≤ 6 KB.
 

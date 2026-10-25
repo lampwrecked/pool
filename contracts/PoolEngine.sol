@@ -22,6 +22,12 @@ pragma solidity ^0.8.24;
     Free to mint (collectors pay gas). One mint per wallet.
     A token's holder may rewrite its gesture for 0.01 ETH.
 
+    Sealing: when minting is done, the artist seals the pool. That closes
+    minting for good and mints one more token, the pool token, whose
+    artwork is the whole pool with every gesture in order. It is always
+    the token right after the last gesture (#101 if all 100 are minted).
+    It stays live: when a holder rewrites a gesture, the pool token shows it.
+
     Gesture format (version 1), all integers big-endian:
       [0]      version = 1
       [1..2]   screen aspect × 1000   (100..4000)
@@ -60,18 +66,21 @@ contract PoolEngine is Ownable {
     bool public mintOpen;
     bool public rewriteOpen = true;
     bool public filesFrozen;
+    uint256 public poolToken;        // the token that is the whole pool (0 until sealed)
 
     mapping(address => bool) public hasMinted;
     mapping(uint256 => address) private _data;      // token id => contract holding its gesture
     mapping(uint8 => address[]) private _files;     // file slot => chunks
 
     event Gesture(uint256 indexed tokenId, address indexed by, uint256 size, bool rewrite);
+    event Sealed(uint256 indexed poolToken, address indexed to, uint256 gestures);
 
     constructor(address collection) Ownable(msg.sender) { nft = IERC721TL(collection); }
 
     // ------------------------------------------------------------ mint + rewrite
 
     function mint(bytes calldata g) external returns (uint256 id) {
+        require(poolToken == 0, "the pool is sealed");
         require(mintOpen, "mint closed");
         require(totalSupply < MAX_SUPPLY, "pool is full");
         require(!hasMinted[msg.sender], "one gesture per wallet");
@@ -93,6 +102,18 @@ contract PoolEngine is Ownable {
         _validate(g);
         _data[id] = _store(g);
         emit Gesture(id, msg.sender, g.length, true);
+    }
+
+    /// close the pool for good and mint the pool token (the whole work) to `to`
+    function sealPool(address to) external onlyOwner {
+        require(poolToken == 0, "already sealed");
+        require(totalSupply >= 1, "no gestures yet");
+        require(to != address(0), "no recipient");
+        mintOpen = false;
+        poolToken = totalSupply + 1;
+        nft.externalMint(to, "onchain");
+        require(nft.ownerOf(poolToken) == to, "collection out of step: use a dedicated collection");
+        emit Sealed(poolToken, to, totalSupply);
     }
 
     function _validate(bytes calldata g) internal pure {
@@ -234,6 +255,7 @@ contract PoolEngine is Ownable {
 
     /// called by the collection's tokenURI (this engine is its rendering contract)
     function tokenURI(uint256 id) external view returns (string memory) {
+        if (poolToken != 0 && id == poolToken) return _poolTokenURI();
         require(id >= 1 && id <= totalSupply, "no such token");
         bytes[] memory p = new bytes[](9);
         p[0] = abi.encodePacked('{"name":"pool #', id.toString());
@@ -250,25 +272,69 @@ contract PoolEngine is Ownable {
         return string.concat("data:application/json;base64,", Base64.encode(_cat(p)));
     }
 
+    /// THE POOL TOKEN: the whole pool as a token, every gesture in order
+    function _poolTokenURI() internal view returns (string memory) {
+        uint256 n = totalSupply;
+        bytes[] memory p = new bytes[](9);
+        p[0] = '{"name":"pool","description":"The whole pool: every gesture, #1 to #';
+        p[1] = bytes(n.toString());
+        p[2] = ', replayed in order, one second apart. When a holder rewrites a gesture, this changes with it. Fully on-chain. pool by Lampwrecked.","image":"data:image/svg+xml;base64,';
+        p[3] = bytes(Base64.encode(_poolSvg()));
+        if (_files[FILE_POOL].length > 0) {
+            p[4] = '","animation_url":"data:text/html;base64,';
+            p[5] = bytes(Base64.encode(poolHTML()));
+        }
+        p[6] = '","attributes":[{"trait_type":"Gestures","value":';
+        p[7] = bytes(n.toString());
+        p[8] = "}]}";
+        return string.concat("data:application/json;base64,", Base64.encode(_cat(p)));
+    }
+
     // a still of the gesture: every finger path traced in light on black water
     function _svg(uint256 id) internal view returns (bytes memory) {
         bytes memory g = gesture(id);
+        bytes memory b = new bytes(g.length * 8 + 1600);
+        uint256 k = _put(b, 0, _svgHead());
+        k = _trace(b, k, g, true);
+        k = _put(b, k, bytes("</g></svg>"));
+        assembly { mstore(b, k) }
+        return b;
+    }
+
+    // a still of the whole pool: every gesture traced over the others, fainter
+    function _poolSvg() internal view returns (bytes memory) {
+        uint256 n = totalSupply;
+        bytes[] memory gs = new bytes[](n);
+        uint256 size = 1600;
+        for (uint256 i; i < n; ++i) { gs[i] = gesture(i + 1); size += gs[i].length * 8 + 64; }
+        bytes memory b = new bytes(size);
+        uint256 k = _put(b, 0, _svgHead());
+        k = _put(b, k, bytes('<g stroke-opacity=".35" stroke-width="3">'));
+        for (uint256 i; i < n; ++i) k = _trace(b, k, gs[i], false);
+        k = _put(b, k, bytes("</g></g></svg>"));
+        assembly { mstore(b, k) }
+        return b;
+    }
+
+    function _svgHead() private pure returns (bytes memory) {
+        return abi.encodePacked(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">',
+            '<rect width="1000" height="1000" fill="#dfe8ea"/><rect x="24" y="24" width="952" height="952" fill="#020a10"/>',
+            '<g fill="none" stroke="#5fe3ff" stroke-opacity=".85" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">'
+        );
+    }
+
+    // write one gesture's finger paths as polylines, fitted to its screen shape
+    function _trace(bytes memory b, uint256 k, bytes memory g, bool frame) private pure returns (uint256) {
         uint256 aspect = (uint256(uint8(g[1])) << 8) | uint8(g[2]);
         uint256 h = 860;
         uint256 w = (h * aspect) / 1000;
         if (w > 860) { w = 860; h = (860 * 1000) / aspect; }
         uint256 ox = (1000 - w) / 2;
         uint256 oy = (1000 - h) / 2;
-
-        bytes memory b = new bytes(g.length * 8 + 1600);
-        uint256 k = _put(b, 0,
-            abi.encodePacked(
-                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">',
-                '<rect width="1000" height="1000" fill="#dfe8ea"/><rect x="24" y="24" width="952" height="952" fill="#020a10"/>',
-                '<rect x="', ox.toString(), '" y="', oy.toString(), '" width="', w.toString(), '" height="', h.toString(),
-                '" fill="none" stroke="#0e2a36" stroke-width="2"/>',
-                '<g fill="none" stroke="#5fe3ff" stroke-opacity=".85" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">'
-            ));
+        if (frame) k = _put(b, k, abi.encodePacked(
+            '<rect x="', ox.toString(), '" y="', oy.toString(), '" width="', w.toString(), '" height="', h.toString(),
+            '" stroke="#0e2a36" stroke-width="2"/>'));
 
         uint256 strokes = uint8(g[3]);
         uint256 p = 4;
@@ -292,9 +358,7 @@ contract PoolEngine is Ownable {
                 p += 8 + (n - 1) * 5;
             }
         }
-        k = _put(b, k, bytes("</g></svg>"));
-        assembly { mstore(b, k) }
-        return b;
+        return k;
     }
 
     // ------------------------------------------------------------ memory helpers

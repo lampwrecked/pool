@@ -61,7 +61,14 @@
   </section>
 
   <section>
-    <h2>4 · Make it permanent</h2>
+    <h2>4 · Seal the pool</h2>
+    <p>When minting is done. Closes minting for good and mints one more token, <b>pool</b>: the whole work, every gesture in order. It goes to the address below (yours by default). Only once, and it can't be undone.</p>
+    <input id="seal-to" placeholder="0x… (empty = your connected wallet)" style="width:100%;max-width:420px">
+    <button id="seal" class="danger" disabled>seal the pool</button>
+  </section>
+
+  <section>
+    <h2>5 · Make it permanent</h2>
     <p>After this the pool and mint page can never change. Do it once everything looks right on mainnet.</p>
     <button id="freeze" class="danger" disabled>freeze files forever</button>
   </section>
@@ -91,6 +98,7 @@ async function status() {
     const mint = L.decUint(await call('0x' + L.SEL.mintOpen));
     const rw = L.decUint(await call('0x' + L.SEL.rewriteOpen));
     const frozen = L.decUint(await call('0x' + L.SEL.filesFrozen));
+    let sealedAs = 0; try { sealedAs = L.decUint(await call('0x' + L.SEL.poolToken)); } catch (e) { }   // standalone Pool.sol has no pool token
     const pool = L.decBytes(await call(L.encUint(L.SEL.file, 0))).length;
     const page = L.decBytes(await call(L.encUint(L.SEL.file, 1))).length;
     const bal = Number(BigInt(await eth().request({ method: 'eth_getBalance', params: [CFG.contract, 'latest'] }))) / 1e18;
@@ -103,12 +111,13 @@ async function status() {
     if (collection) rows.push(['collection', collection + (CFG.collection && CFG.collection.toLowerCase() !== collection.toLowerCase() ? '  (≠ config.js!)' : '')],
       ['engine can mint', minter ? 'yes' : 'not yet: step 0']);
     rows.push(['owner', owner + (isOwner ? '  (you)' : from ? '  (not you!)' : '')], ['minted', supply + ' / 100'],
-      ['minting', mint ? 'open' : 'closed'], ['rewrites', rw ? 'open' : 'closed'],
+      ['minting', sealedAs ? 'sealed for good' : mint ? 'open' : 'closed'], ['pool token', sealedAs ? '#' + sealedAs : 'not yet (step 4)'], ['rewrites', rw ? 'open' : 'closed'],
       ['pool file', pool ? pool.toLocaleString() + ' bytes' : 'not uploaded'], ['mint page', page ? page.toLocaleString() + ' bytes' : 'not uploaded'],
       ['files', frozen ? 'FROZEN (permanent)' : 'editable'], ['balance', bal + ' ETH']);
     for (const id of ['up-pool', 'up-mint', 'freeze']) $(id).disabled = !isOwner || !!frozen;
     for (const id of ['mint-open', 'mint-close', 'rw-open', 'rw-close', 'withdraw']) $(id).disabled = !isOwner;
     for (const id of ['grant', 'render']) $(id).disabled = !isOwner || !collection;
+    $('seal').disabled = !isOwner || !collection || !!sealedAs || !supply;
     $('preview').disabled = !pool;
   } catch (e) { log('could not read the contract: ' + e.message, 'warn'); }
   $('status').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
@@ -159,6 +168,12 @@ $('rw-open').onclick = () => tx('open rewrites', L.encBool(L.SEL.setRewriteOpen,
 $('rw-close').onclick = () => tx('close rewrites', L.encBool(L.SEL.setRewriteOpen, false));
 $('withdraw').onclick = () => tx('withdraw', '0x' + L.SEL.withdraw);
 $('freeze').onclick = () => { if (confirm('Freeze the pool and mint page forever? This cannot be undone.')) tx('freeze', '0x' + L.SEL.freezeFiles); };
+$('seal').onclick = () => {
+  const to = ($('seal-to').value.trim() || from || '');
+  if (!/^0x[0-9a-fA-F]{40}$/.test(to)) return log('that isn\'t a wallet address', 'warn');
+  if (confirm(`Seal the pool? Minting closes for good, and the pool token goes to ${to}. This cannot be undone.`))
+    tx('seal the pool', L.encAddr(L.SEL.sealPool, to));
+};
 $('preview').onclick = async () => {
   try {
     log('building the whole pool from the chain…');
