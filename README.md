@@ -1,6 +1,6 @@
 # pool
 
-100 editions. Each is ten seconds of one person's touch, stored on Ethereum and replayed in a pool of light: **#1, then #2 a second later, and so on to #100**, then around again. Never more than ten in the water at once. Free to mint (collectors pay their own gas), one per wallet. **A token's holder can rewrite its gesture for 0.01 ETH**; it keeps its number and its place in the order.
+100 editions. Each is ten seconds of one person's touch, stored on Ethereum and replayed in a pool of light: **#1, then #2 two seconds later, and so on to #100**, then around again (with fewer than 100, they repeat in order). Never more than five in the water at once. Free to mint (collectors pay their own gas), one per wallet. **A token's holder can rewrite its gesture for 0.01 ETH**; it keeps its number and its place in the order.
 
 **Fully on-chain.** The pool itself (compressed) and every gesture live in the contract. **Each token renders only its own gesture**, looping in the pool. **The whole work** — the pool rendered with all the gestures in order — is built on-chain too: `poolHTML()` / `poolURI()` on the contract (that's what "preview the pool" in /admin/ opens). No server, no hosting. The mint page is stored on-chain as well (`mintHTML()`).
 
